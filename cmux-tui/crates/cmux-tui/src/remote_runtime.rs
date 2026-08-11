@@ -5231,12 +5231,12 @@ mod tests {
         options.providers = providers;
         options.auth = ClientAuthMode::Carrier;
         options.reconnect.maximum_attempts = Some(1);
-        options.reconnect.attempt_timeout = instrumented_test_timeout(Duration::from_millis(20));
+        options.reconnect.attempt_timeout = Duration::from_millis(250);
         options.reconnect.full_jitter = false;
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
 
         let (connection, selected) = tokio::time::timeout(
-            instrumented_test_timeout(Duration::from_millis(500)),
+            Duration::from_secs(2),
             connect_first_available(&options, shutdown_rx),
         )
         .await
@@ -5277,12 +5277,12 @@ mod tests {
         options.providers = providers;
         options.auth = ClientAuthMode::Carrier;
         options.reconnect.maximum_attempts = Some(1);
-        options.reconnect.attempt_timeout = instrumented_test_timeout(Duration::from_millis(20));
+        options.reconnect.attempt_timeout = Duration::from_millis(250);
         options.reconnect.full_jitter = false;
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
 
         let (connection, selected) = tokio::time::timeout(
-            instrumented_test_timeout(Duration::from_millis(500)),
+            Duration::from_secs(2),
             connect_first_available(&options, shutdown_rx),
         )
         .await

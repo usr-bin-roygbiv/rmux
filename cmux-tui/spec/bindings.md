@@ -4,6 +4,10 @@ cmux ships handwritten resource APIs for Rust, Python, TypeScript, Go, Java,
 C++20, and Zig. Each package also contains a generated private-protocol layer
 under an explicit `raw` namespace.
 
+Raw bindings expose protocol-v12 commands and events, including optional agent
+telemetry, the `error` agent state, `agent-state-changed`, and notification
+subtitles. They must gate newer fields on the identified protocol version.
+
 The split is deliberate:
 
 - [`resource-operations-v2.json`](resource-operations-v2.json) defines the
@@ -49,6 +53,10 @@ effect. SDKs retain the structured error and never repeat that key
 automatically.
 
 ## Commands
+
+Protocol-v12 raw SDKs model `error` alongside earlier agent states, preserve
+optional telemetry on reports, records, and events, and expose optional
+notification subtitles. Missing additive fields decode as null or absent.
 
 An exact command preserves every argument and does not invoke a shell:
 

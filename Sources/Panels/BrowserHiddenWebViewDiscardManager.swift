@@ -242,6 +242,10 @@ final class BrowserHiddenWebViewDiscardManager {
         }
     }
 
+    func shutdown() {
+        stopOnMainActor()
+    }
+
     func markDiscarded(reason: String, now: Date) {
         isDiscardedForMemory = true
         isRestoreNavigationPending = false
@@ -335,6 +339,7 @@ final class BrowserHiddenWebViewDiscardManager {
 
     private func stopOnMainActor() {
         cancel()
+        delegate = nil
         if let policyObserver {
             NotificationCenter.default.removeObserver(policyObserver)
             self.policyObserver = nil

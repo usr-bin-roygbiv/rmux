@@ -1011,7 +1011,7 @@ func validateDecodedValue(raw json.RawMessage, value any) error {
 			return fmt.Errorf("agent snapshot ids must be present")
 		}
 		switch decoded.State {
-		case "working", "blocked", "idle", "done", "unknown":
+	case "working", "blocked", "idle", "done", "error", "unknown":
 		default:
 			return fmt.Errorf("invalid agent state %q", decoded.State)
 		}
@@ -2017,6 +2017,9 @@ func (s *Session) CreateNotification(ctx context.Context, options NotificationCr
 	input := s.route.params()
 	input[wirev2.FieldTitle] = options.Title
 	input[wirev2.FieldBody] = options.Body
+	if options.Subtitle.Present {
+		input["subtitle"] = options.Subtitle.Value
+	}
 	if options.Level != nil {
 		input[wirev2.FieldLevel] = *options.Level
 	}
@@ -2104,6 +2107,30 @@ func (s *Session) ReportAgent(ctx context.Context, options AgentReportOptions) (
 	if options.SourceSession != nil {
 		input["source_session"] = *options.SourceSession
 	}
+	if options.RootSession != nil {
+		input["root_session"] = *options.RootSession
+	}
+	if options.Label.Present {
+		input["label"] = options.Label.Value
+	}
+	if options.Detail.Present {
+		input["detail"] = options.Detail.Value
+	}
+	if options.StartedAtMS.Present {
+		input["started_at_ms"] = options.StartedAtMS.Value
+	}
+	if options.TasksCompleted.Present {
+		input["tasks_completed"] = options.TasksCompleted.Value
+	}
+	if options.TasksTotal.Present {
+		input["tasks_total"] = options.TasksTotal.Value
+	}
+	if options.JobsRunning.Present {
+		input["jobs_running"] = options.JobsRunning.Value
+	}
+	if options.AgentsActive.Present {
+		input["agents_active"] = options.AgentsActive.Value
+	}
 	merge(input, options.Extra)
 	result, err := mutationValue[AgentSnapshot](
 		ctx,
@@ -2132,6 +2159,7 @@ func validAgentState(state AgentState) bool {
 		AgentStateBlocked,
 		AgentStateIdle,
 		AgentStateDone,
+		AgentStateError,
 		AgentStateUnknown:
 		return true
 	default:

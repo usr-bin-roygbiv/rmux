@@ -573,6 +573,7 @@ fn terminal_host_reset_holds_structured_live_marker_lock() {
         supports_set_defaults: true,
         supports_clear_history: true,
         supports_terminate_ack: false,
+        supports_terminate_only: false,
     };
     let record_path = record.record_path(&root);
     let live_path = terminal_host_live_marker_path(&record_path, &record);
@@ -666,6 +667,7 @@ fn terminal_host_reset_checks_legacy_live_marker_as_orphan() {
         supports_set_defaults: false,
         supports_clear_history: false,
         supports_terminate_ack: false,
+        supports_terminate_only: false,
     };
     let record_path = record.record_path(&root);
     let live_path = terminal_host_live_marker_path(&record_path, &record);
@@ -773,6 +775,7 @@ fn reset_accepts_dead_v2_terminal_host_without_creating_live_marker() {
         supports_set_defaults: true,
         supports_clear_history: true,
         supports_terminate_ack: false,
+        supports_terminate_only: false,
     };
     let record_path = record.record_path(&host_root);
     let live_path = terminal_host_live_marker_path(&record_path, &record);
@@ -1853,7 +1856,7 @@ fn resource_tab_detach_rejects_browser_content() {
 }
 
 #[test]
-fn resource_tab_close_preserves_terminal_content_without_an_explicit_terminal_change() {
+fn resource_tab_close_cascades_terminal_content_without_an_explicit_terminal_change() {
     let mut registry = WorkspaceRegistry::in_memory("terminal-tab-close").unwrap();
     commit_terminal_topology(&mut registry, "create-terminal-tab-close");
 
@@ -1883,10 +1886,7 @@ fn resource_tab_close_preserves_terminal_content_without_an_explicit_terminal_ch
         .unwrap();
 
     assert!(registry.resource_topology_snapshot().unwrap().tabs.is_empty());
-    assert_eq!(
-        registry.terminal_resource_id(TERMINAL_ONE).unwrap(),
-        Some(terminal_resource(TERMINAL_ONE)),
-    );
+    assert_eq!(registry.terminal_resource_id(TERMINAL_ONE).unwrap(), None);
     let transaction = registry.connection.unchecked_transaction().unwrap();
     validate_resource_invariants(&transaction).unwrap();
     transaction.commit().unwrap();

@@ -10904,8 +10904,9 @@ final class Workspace: Identifiable, ObservableObject, FilePreviewTabMetadataHos
                     BrowserWindowPortalRegistry.synchronizeForAnchor(browserPanel.portalAnchorView)
                 }
                 let isReady = browserPortalReady(for: browserPanel)
-                if isReady,
-                   (!wasReady || BrowserWindowPortalRegistry.debugSnapshot(for: browserPanel.webView)?.containerHidden == true) {
+                if wasReady,
+                   isReady,
+                   BrowserWindowPortalRegistry.debugSnapshot(for: browserPanel.webView)?.containerHidden == true {
                     BrowserWindowPortalRegistry.refresh(
                         webView: browserPanel.webView,
                         reason: reason
@@ -11191,10 +11192,6 @@ final class Workspace: Identifiable, ObservableObject, FilePreviewTabMetadataHos
                 if anchorReady && !portalReady {
                     BrowserWindowPortalRegistry.synchronizeForAnchor(anchorView)
                     if browserPortalReady(for: browserPanel) {
-                        BrowserWindowPortalRegistry.refresh(
-                            webView: browserPanel.webView,
-                            reason: reason
-                        )
                         didChange = true
                     }
                 } else if anchorReady && snapshot?.containerHidden == true {

@@ -311,6 +311,14 @@ class PublicBoundaryScanTests(unittest.TestCase):
                 tui / "bindings/rust/src/client.rs",
                 "pub fn legacy(surface_id: u64) {}\n",
             )
+            write(
+                tui / "bindings/java/src/com/cmux/raw/AgentRecord.java",
+                "record AgentRecord(long surface) {}\n",
+            )
+            write(
+                tui / "bindings/java/src/com/cmux/raw/NotificationEvent.java",
+                "record NotificationEvent(Long surface) {}\n",
+            )
             write(tui / "bindings/go/generated.go", "type Surface struct { ID uint64 }\n")
             write(
                 tui / "bindings/go/.cmux-sdk-manifest.json",
@@ -456,7 +464,7 @@ class ContractRegistryTests(unittest.TestCase):
 
         self.assertEqual(
             catalog["types"]["AgentState"]["values"],
-            ["working", "blocked", "idle", "done", "unknown"],
+            ["working", "blocked", "idle", "done", "error", "unknown"],
         )
         self.assertEqual(
             catalog["types"]["NotificationLevel"]["values"],

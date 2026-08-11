@@ -547,7 +547,7 @@ assert tree_has_surface(initial_tree), "interactive client did not create its in
 
 ident = rpc({"id": 1, "cmd": "identify"})
 assert ident["ok"] and ident["data"]["app"] == "cmux-tui", ident
-assert ident["data"]["protocol"] == expected_protocol(), ident
+assert ident["data"]["protocol"] == 12, ident
 print("identify ok:", ident["data"])
 
 ws0 = initial_tree[0]
@@ -999,7 +999,9 @@ assert "├" in menu_lines[15], menu_lines[4:19]
 assert "Copy tab id" in menu_lines[16], menu_lines[4:19]
 assert "Copy pane id" in menu_lines[17], menu_lines[4:19]
 output = b""
-os.write(fd, b"\x1b[<34;81;17M\x1b[<2;81;17m")
+# The opening right-click was already released, so choose the open-menu row
+# with a fresh left-click rather than synthesizing an ownerless right drag.
+os.write(fd, b"\x1b[<0;81;17M\x1b[<0;81;17m")
 drain(0.8)
 osc52 = re.findall(rb"\x1b\]52;c;([A-Za-z0-9+/=]+)", output)
 assert osc52, "no OSC 52 clipboard write after menu copy"

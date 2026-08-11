@@ -277,6 +277,7 @@ class _StreamState(Generic[ItemT]):
         sequence: str,
         cursor: Optional[Cursor],
         payload: Any,
+        on_overflow: Optional[Callable[[], None]] = None,
     ) -> bool:
         """Queues one item without blocking. Returns false after local overflow."""
         try:
@@ -323,6 +324,8 @@ class _StreamState(Generic[ItemT]):
                 self.queued_messages >= MAX_STREAM_MESSAGES
                 or encoded_size > MAX_STREAM_BYTES - self.queued_bytes
             ):
+                if on_overflow is not None:
+                    on_overflow()
                 self._finish_locked(
                     StreamEnd(
                         self.stream_id,
@@ -947,12 +950,27 @@ class ProtocolConnection:
                     )
                 return
             if envelope_type == "stream_item":
+                # A matching inbound item proves the open request reached the
+                # server, even if its outbound send callback has not run yet.
+                stream.mark_open_dispatched()
                 assert decoded_item is not None
-                if not stream.push(envelope, *decoded_item):
-                    self.forget_stream(stream_id)
+                cleanup_token = f"stream:{stream_id}"
+
+                def reserve_overflow_cleanup() -> None:
+                    with self._request_cleanup_condition:
+                        self._streams.pop(stream_id, None)
+                        self._active_request_cleanups.add(cleanup_token)
+                        self._request_cleanup_condition.notify_all()
+
+                if not stream.push(
+                    envelope,
+                    *decoded_item,
+                    on_overflow=reserve_overflow_cleanup,
+                ):
                     threading.Thread(
                         target=self._cancel_stream_confirmed,
                         args=(stream,),
+                        kwargs={"cleanup_token": cleanup_token},
                         name=f"cmux-stream-cancel-{secrets.token_hex(4)}",
                         daemon=True,
                     ).start()
@@ -1050,21 +1068,33 @@ class ProtocolConnection:
         state: _StreamState[Any],
         *,
         propagate: bool = False,
+        cleanup_token: Optional[str] = None,
     ) -> None:
-        if not state.begin_stream_cleanup():
-            return
+        cleanup_reserved = cleanup_token is not None
         try:
-            self._request_stream_cancel(state, failed_open=False)
-        except BaseException as cancel_error:
-            if not self.closed:
-                self._fail(
-                    CmuxConnectionError(
-                        "stream.cancel was not confirmed; connection closed "
-                        f"to release remote stream state: {cancel_error}"
-                    )
+            if not state.begin_stream_cleanup():
+                return
+            try:
+                self._request_stream_cancel(
+                    state,
+                    failed_open=False,
+                    _skip_request_cleanup_gate=cleanup_reserved,
                 )
-            if propagate:
-                raise
+            except BaseException as cancel_error:
+                if not self.closed:
+                    self._fail(
+                        CmuxConnectionError(
+                            "stream.cancel was not confirmed; connection closed "
+                            f"to release remote stream state: {cancel_error}"
+                        )
+                    )
+                if propagate:
+                    raise
+        finally:
+            if cleanup_token is not None:
+                with self._request_cleanup_condition:
+                    self._active_request_cleanups.discard(cleanup_token)
+                    self._request_cleanup_condition.notify_all()
 
     def _request_stream_cancel(
         self,
@@ -1073,6 +1103,7 @@ class ProtocolConnection:
         failed_open: bool,
         operation: Optional[str] = None,
         timeout: Optional[float] = None,
+        _skip_request_cleanup_gate: bool = False,
     ) -> bool:
         def fail_cancel_send(error: BaseException) -> None:
             if failed_open and operation is not None:
@@ -1106,6 +1137,7 @@ class ProtocolConnection:
             _dispatch_guard=lambda: state.begin_cancel_dispatch(
                 failed_open=failed_open
             ),
+            _skip_request_cleanup_gate=_skip_request_cleanup_gate,
         )
         if result is _REQUEST_NOT_DISPATCHED:
             return False

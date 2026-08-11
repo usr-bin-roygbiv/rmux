@@ -1674,11 +1674,11 @@ pub unsafe extern "C" fn cmux_terminal_client_copy_frame(
 ///
 /// # Safety
 ///
-/// The client pointer may be null. A non-null value must be a live handle
-/// returned by cmux_terminal_client_connect, and it must not be disconnected
-/// during this call. The buffer pointer may be null; otherwise, when capacity is
-/// nonzero, it must point to capacity writable u16 values that do not overlap
-/// memory owned by the client.
+/// `client` may be null. A non-null value must be a live handle returned by
+/// [`cmux_terminal_client_connect`], and it must not be disconnected during
+/// this call. `buffer` may be null; otherwise it must point to at least
+/// `capacity` writable `u16` entries that do not overlap memory owned by
+/// `client`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cmux_terminal_client_copy_frame_dirty_rows(
     client: *const CmuxTerminalClient,
@@ -1704,9 +1704,9 @@ pub unsafe extern "C" fn cmux_terminal_client_copy_frame_dirty_rows(
 ///
 /// # Safety
 ///
-/// The client pointer may be null. A non-null value must be a live handle
-/// returned by cmux_terminal_client_connect, and it must not be disconnected
-/// during this call.
+/// `client` may be null. A non-null value must be a live handle returned by
+/// [`cmux_terminal_client_connect`], and it must not be disconnected during
+/// this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cmux_terminal_client_frame_row_count(
     client: *const CmuxTerminalClient,
@@ -1724,11 +1724,11 @@ pub unsafe extern "C" fn cmux_terminal_client_frame_row_count(
 ///
 /// # Safety
 ///
-/// The client pointer may be null. A non-null value must be a live handle
-/// returned by cmux_terminal_client_connect, and it must not be disconnected
-/// during this call. The buffer pointer may be null; otherwise, when capacity is
-/// nonzero, it must point to capacity writable bytes that do not overlap memory
-/// owned by the client.
+/// `client` may be null. A non-null value must be a live handle returned by
+/// [`cmux_terminal_client_connect`], and it must not be disconnected during
+/// this call. `buffer` may be null; otherwise, when `capacity` is nonzero, it
+/// must point to `capacity` writable bytes that do not overlap memory owned by
+/// `client`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cmux_terminal_client_copy_frame_row(
     client: *const CmuxTerminalClient,

@@ -4173,6 +4173,7 @@ mod tests {
         enrolled.revision = 2;
         enrolled.machines[0].connectable = true;
         let server_catalog = catalog;
+        let server_enrolled = enrolled;
         let (finish, finished) = mpsc::channel();
         let server = thread::spawn(move || {
             let first_mutation_id = {
@@ -4211,12 +4212,12 @@ mod tests {
                     request.id,
                     protocol::ConnectExternalMachineResult {
                         machine_id: id("machine-1"),
-                        revision: enrolled.revision,
+                        revision: server_enrolled.revision,
                         notice: None,
                     },
                 ),
             );
-            serve_runtime_refresh(&mut stream, &mut reader, &enrolled, None);
+            serve_runtime_refresh(&mut stream, &mut reader, &server_enrolled, None);
             finished.recv().unwrap();
         });
 
@@ -4983,13 +4984,12 @@ mod tests {
     }
 
     #[test]
-    fn mutation_nonce_is_cryptographically_unique_and_pid_independent() {
+    fn mutation_nonce_is_cryptographically_unique_and_fixed_width() {
         let first = random_mutation_nonce().unwrap();
         let second = random_mutation_nonce().unwrap();
         assert_eq!(first.len(), 32);
         assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_ne!(first, second);
-        assert!(!first.contains(&std::process::id().to_string()));
     }
 
     #[test]

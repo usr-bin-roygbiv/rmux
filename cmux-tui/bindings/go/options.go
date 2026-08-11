@@ -30,6 +30,11 @@ type NullableBool struct {
 	Value   *bool
 }
 
+type NullableDecimal struct {
+	Present bool
+	Value   *Decimal
+}
+
 type NullableStringMap struct {
 	Present bool
 	Value   map[string]string
@@ -45,6 +50,12 @@ func NullBool() NullableBool { return NullableBool{Present: true} }
 
 func ValueBool(value bool) NullableBool {
 	return NullableBool{Present: true, Value: &value}
+}
+
+func NullDecimal() NullableDecimal { return NullableDecimal{Present: true} }
+
+func ValueDecimal(value Decimal) NullableDecimal {
+	return NullableDecimal{Present: true, Value: &value}
 }
 
 func NullStringMap() NullableStringMap {
@@ -513,6 +524,7 @@ type NotificationCreateOptions struct {
 	MutationOptions
 	Title      string
 	Body       string
+	Subtitle   NullableString
 	Level      *string
 	TerminalID *TerminalID
 }
@@ -527,6 +539,14 @@ type AgentReportOptions struct {
 	State         AgentState
 	Source        AgentReportSource
 	SourceSession *string
+	RootSession    *bool
+	Label          NullableString
+	Detail         NullableString
+	StartedAtMS    NullableDecimal
+	TasksCompleted NullableDecimal
+	TasksTotal     NullableDecimal
+	JobsRunning    NullableDecimal
+	AgentsActive   NullableDecimal
 }
 
 type SidebarViewGetOptions struct{ ReadOptions }

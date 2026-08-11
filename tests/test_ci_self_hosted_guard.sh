@@ -108,7 +108,7 @@ check_e2e_runner_fallbacks() {
   if ! awk '
     /^run-name:/ {
       saw_run_name=1
-      if ($0 ~ /inputs\.test_filter/ && ($0 ~ /inputs\.runner/ || $0 ~ /depot-macos-latest/) && ($0 ~ /inputs\.ref/ || $0 ~ /github\.ref_name/)) {
+      if ($0 ~ /inputs\.test_filter/ && ($0 ~ /inputs\.runner/ || $0 ~ /depot-macos-latest/) && $0 ~ /inputs\.ref/ && $0 ~ /github\.sha/) {
         saw_run_name_dynamic=1
       }
     }
@@ -117,10 +117,10 @@ check_e2e_runner_fallbacks() {
     in_concurrency && /cancel-in-progress:[[:space:]]*true/ { saw_cancel=1 }
     in_concurrency && (/inputs\.runner/ || /depot-macos-latest/) { saw_runner=1 }
     in_concurrency && /inputs\.test_filter/ { saw_test_filter=1 }
-    in_concurrency && /github\.ref_name/ { saw_ref_name=1 }
-    END { exit !(saw_run_name && saw_run_name_dynamic && saw_cancel && saw_runner && saw_test_filter && saw_ref_name) }
+    in_concurrency && /github\.sha/ { saw_exact_sha=1 }
+    END { exit !(saw_run_name && saw_run_name_dynamic && saw_cancel && saw_runner && saw_test_filter && saw_exact_sha) }
   ' "$E2E_FILE"; then
-    echo "FAIL: test-e2e.yml must dynamically name runs and cancel duplicate queued E2E jobs by runner, normalized ref, and test filter"
+    echo "FAIL: test-e2e.yml must dynamically name runs and cancel duplicate queued E2E jobs by runner, exact ref, and test filter"
     exit 1
   fi
 

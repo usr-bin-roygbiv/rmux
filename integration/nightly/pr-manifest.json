@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "repository": "manaflow-ai/cmux",
+  "pull_requests": [
+    {"number": 8630, "author": "usr-bin-roygbiv", "classification": "product-included", "included": true},
+    {"number": 8668, "author": "usr-bin-roygbiv", "classification": "no-op/superseded", "included": false},
+    {"number": 8762, "author": "usr-bin-roygbiv", "classification": "benchmark-only", "included": true},
+    {"number": 8958, "author": "usr-bin-roygbiv", "classification": "product-included", "included": true},
+    {"number": 8959, "author": "usr-bin-roygbiv", "classification": "product-included", "included": true},
+    {"number": 8972, "author": "usr-bin-roygbiv", "classification": "product-included", "included": true},
+    {"number": 8974, "author": "usr-bin-roygbiv", "classification": "product-included", "included": true},
+    {"number": 8975, "author": "usr-bin-roygbiv", "classification": "product-included", "included": true},
+    {"number": 8976, "author": "usr-bin-roygbiv", "classification": "product-included", "included": true},
+    {"number": 8977, "author": "usr-bin-roygbiv", "classification": "product-included", "included": true},
+    {"number": 8978, "author": "usr-bin-roygbiv", "classification": "product-included", "included": true},
+    {"number": 8979, "author": "usr-bin-roygbiv", "classification": "product-included", "included": true},
+    {"number": 8980, "author": "usr-bin-roygbiv", "classification": "product-included", "included": true},
+    {"number": 8996, "author": "iarbpairs", "classification": "superseded-by-8999", "included": false},
+    {"number": 8999, "author": "iarbpairs", "classification": "product-included", "included": true},
+    {"number": 9003, "author": "iarbpairs", "classification": "product-included", "included": true},
+    {"number": 9022, "author": "iarbpairs", "classification": "product-included", "included": true},
+    {"number": 9023, "author": "usr-bin-roygbiv", "classification": "product-included", "included": true},
+    {"number": 9061, "author": "wolfiesch", "classification": "product-included", "included": true},
+    {"number": 9062, "author": "wolfiesch", "classification": "product-included", "included": true}
+  ]
+}

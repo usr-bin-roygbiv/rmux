@@ -149,6 +149,7 @@ export interface NotificationSnapshot extends Snapshot<NotificationId> {
   readonly sessionId: SessionId;
   readonly title: string;
   readonly body: string;
+  readonly subtitle: string | null;
   readonly level: "info" | "warning" | "error";
   readonly terminalId?: TerminalId;
   readonly createdAtMs: DecimalString;
@@ -157,10 +158,18 @@ export interface NotificationSnapshot extends Snapshot<NotificationId> {
 export interface AgentSnapshot extends Snapshot<AgentId> {
   readonly sessionId: SessionId;
   readonly terminalId: TerminalId;
-  readonly state: "working" | "blocked" | "idle" | "done" | "unknown";
+  readonly state: "working" | "blocked" | "idle" | "done" | "error" | "unknown";
   readonly source: "hook" | "socket" | "detected";
   readonly updatedAtMs: DecimalString;
   readonly sourceSession: string | null;
+  readonly rootSession: boolean;
+  readonly label: string | null;
+  readonly detail: string | null;
+  readonly startedAtMs: DecimalString | null;
+  readonly tasksCompleted: DecimalString | null;
+  readonly tasksTotal: DecimalString | null;
+  readonly jobsRunning: DecimalString | null;
+  readonly agentsActive: DecimalString | null;
 }
 
 export class PairingCode {

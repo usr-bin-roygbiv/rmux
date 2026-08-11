@@ -539,6 +539,7 @@ type NotificationSnapshot struct {
 	ID          NotificationID       `json:"id"`
 	SessionID   SessionID            `json:"session_id"`
 	Title       string               `json:"title"`
+	Subtitle    *string              `json:"subtitle"`
 	Body        string               `json:"body"`
 	Level       string               `json:"level"`
 	TerminalID  *TerminalID          `json:"terminal_id,omitempty"`
@@ -554,6 +555,7 @@ const (
 	AgentStateBlocked AgentState = "blocked"
 	AgentStateIdle    AgentState = "idle"
 	AgentStateDone    AgentState = "done"
+	AgentStateError   AgentState = "error"
 	AgentStateUnknown AgentState = "unknown"
 )
 
@@ -574,14 +576,22 @@ const (
 )
 
 type AgentSnapshot struct {
-	ID            AgentID              `json:"id"`
-	SessionID     SessionID            `json:"session_id"`
-	TerminalID    TerminalID           `json:"terminal_id"`
-	State         AgentState           `json:"state"`
-	Source        AgentSource          `json:"source"`
-	UpdatedAtMS   Decimal              `json:"updated_at_ms"`
-	SourceSession *string              `json:"source_session"`
-	Extra         map[string]JSONValue `json:"extra,omitempty"`
+	ID             AgentID              `json:"id"`
+	SessionID      SessionID            `json:"session_id"`
+	TerminalID     TerminalID           `json:"terminal_id"`
+	State          AgentState           `json:"state"`
+	Source         AgentSource          `json:"source"`
+	UpdatedAtMS    Decimal              `json:"updated_at_ms"`
+	SourceSession  *string              `json:"source_session"`
+	RootSession    bool                 `json:"root_session"`
+	Label          *string              `json:"label"`
+	Detail         *string              `json:"detail"`
+	StartedAtMS    *Decimal             `json:"started_at_ms"`
+	TasksCompleted *Decimal             `json:"tasks_completed"`
+	TasksTotal     *Decimal             `json:"tasks_total"`
+	JobsRunning    *Decimal             `json:"jobs_running"`
+	AgentsActive   *Decimal             `json:"agents_active"`
+	Extra          map[string]JSONValue `json:"extra,omitempty"`
 }
 
 type PairingRequestSnapshot struct {

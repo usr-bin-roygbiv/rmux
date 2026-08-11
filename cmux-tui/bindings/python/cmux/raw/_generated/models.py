@@ -51,6 +51,7 @@ class AgentState(str, Enum):
     BLOCKED = 'blocked'
     IDLE = 'idle'
     DONE = 'done'
+    ERROR = 'error'
     UNKNOWN = 'unknown'
 
 class BrowserProviderAuthentication(str, Enum):
@@ -241,6 +242,14 @@ class AgentRecord:
     source: AgentSource
     state: AgentState
     updated_at_ms: int
+    agents_active: Union[int, None, MissingType] = field(default=MISSING)
+    detail: Union[str, None, MissingType] = field(default=MISSING)
+    jobs_running: Union[int, None, MissingType] = field(default=MISSING)
+    label: Union[str, None, MissingType] = field(default=MISSING)
+    root_session: Union[bool, MissingType] = field(default=MISSING)
+    started_at_ms: Union[int, None, MissingType] = field(default=MISSING)
+    tasks_completed: Union[int, None, MissingType] = field(default=MISSING)
+    tasks_total: Union[int, None, MissingType] = field(default=MISSING)
 
 
 @dataclass(frozen=True)
@@ -798,6 +807,14 @@ class ReportAgentResult:
     session: Union[str, None]
     source: AgentReportSource
     state: AgentState
+    agents_active: Union[int, None, MissingType] = field(default=MISSING)
+    detail: Union[str, None, MissingType] = field(default=MISSING)
+    jobs_running: Union[int, None, MissingType] = field(default=MISSING)
+    label: Union[str, None, MissingType] = field(default=MISSING)
+    root_session: Union[bool, MissingType] = field(default=MISSING)
+    started_at_ms: Union[int, None, MissingType] = field(default=MISSING)
+    tasks_completed: Union[int, None, MissingType] = field(default=MISSING)
+    tasks_total: Union[int, None, MissingType] = field(default=MISSING)
 
 
 @dataclass(frozen=True)
@@ -1568,6 +1585,7 @@ class NotifyRequest:
     body: str
     level: Union[NotificationLevel, None, MissingType] = field(default=MISSING)
     surface: Union[Id, None, MissingType] = field(default=MISSING)
+    subtitle: Union[str, None, MissingType] = field(default=MISSING)
 
 
 @dataclass(frozen=True)
@@ -1710,6 +1728,14 @@ class ReportAgentRequest:
     state: AgentState
     source: AgentReportSource
     session: Union[str, None, MissingType] = field(default=MISSING)
+    agents_active: Union[int, None, MissingType] = field(default=MISSING)
+    detail: Union[str, None, MissingType] = field(default=MISSING)
+    jobs_running: Union[int, None, MissingType] = field(default=MISSING)
+    label: Union[str, None, MissingType] = field(default=MISSING)
+    root_session: Union[bool, MissingType] = field(default=MISSING)
+    started_at_ms: Union[int, None, MissingType] = field(default=MISSING)
+    tasks_completed: Union[int, None, MissingType] = field(default=MISSING)
+    tasks_total: Union[int, None, MissingType] = field(default=MISSING)
 
 
 @dataclass(frozen=True)
@@ -1956,6 +1982,27 @@ class AgentChangedEvent(EventBase):
 
 
 @dataclass(frozen=True)
+class AgentStateChangedEvent(EventBase):
+    __cmux_schema_path__: ClassVar[str] = 'events/agent-state-changed/payload'
+    surface: Id
+    event: Literal['agent-state-changed']
+    previous: Union[AgentState, None]
+    session: Union[str, None]
+    source: AgentSource
+    state: AgentState
+    updated_at_ms: int
+    agents_active: Union[int, None, MissingType] = field(default=MISSING)
+    detail: Union[str, None, MissingType] = field(default=MISSING)
+    jobs_running: Union[int, None, MissingType] = field(default=MISSING)
+    label: Union[str, None, MissingType] = field(default=MISSING)
+    root_session: Union[bool, MissingType] = field(default=MISSING)
+    started_at_ms: Union[int, None, MissingType] = field(default=MISSING)
+    tasks_completed: Union[int, None, MissingType] = field(default=MISSING)
+    tasks_total: Union[int, None, MissingType] = field(default=MISSING)
+    raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False, metadata={'cmux_skip': True})
+
+
+@dataclass(frozen=True)
 class BellEvent(EventBase):
     __cmux_schema_path__: ClassVar[str] = 'events/bell/payload'
     surface: Id
@@ -2110,6 +2157,7 @@ class NotificationEvent(EventBase):
     level: NotificationLevel
     notification: Id
     title: str
+    subtitle: Union[str, None, MissingType] = field(default=MISSING)
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False, metadata={'cmux_skip': True})
 
 
@@ -2279,6 +2327,7 @@ class SurfaceExitedEvent(EventBase):
     __cmux_schema_path__: ClassVar[str] = 'events/surface-exited/payload'
     surface: Id
     event: Literal['surface-exited']
+    runtime_ms: Union[int, None, MissingType] = field(default=MISSING)
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False, metadata={'cmux_skip': True})
 
 
@@ -2472,7 +2521,7 @@ LayoutUndoResult = Union[LayoutUndoUndone, LayoutUndoConfirmationRequired]
 Pane = Union[LivePane, DeadPane]
 TerminalExitOutcome = Union[TerminalExitOutcomeExit, TerminalExitOutcomeSignal, TerminalExitOutcomeUnknown]
 
-KnownEvent = Union[AgentChangedEvent, BellEvent, BrowserStateEvent, ClientAttachedEvent, ClientChangedEvent, ClientDetachedEvent, ClientListInvalidatedEvent, ColorsChangedEvent, ConfigReloadRequestedEvent, DetachedEvent, EmptyEvent, FrameEvent, FrontendProjectionChangedEvent, GraphicsStatusEvent, LayoutChangedEvent, NotificationEvent, OutputEvent, OverflowEvent, PairingRequestedEvent, PairingResolvedEvent, PaneAddedEvent, PaneClosedEvent, RenderDeltaEvent, RenderStateEvent, ResizedEvent, ScreenAddedEvent, ScreenClosedEvent, ScreenRenamedEvent, ScrollChangedEvent, StatusEvent, SurfaceExitedEvent, SurfaceOutputEvent, SurfaceResizeFailedEvent, SurfaceResizedEvent, TabAddedEvent, TabClosedEvent, TabRenamedEvent, TerminalRegistryChangedEvent, TitleChangedEvent, TreeChangedEvent, VtStateEvent, WindowTitleRequestedEvent, WorkspaceAddedEvent, WorkspaceClosedEvent, WorkspaceMovedEvent, WorkspaceRenamedEvent]
+KnownEvent = Union[AgentChangedEvent, AgentStateChangedEvent, BellEvent, BrowserStateEvent, ClientAttachedEvent, ClientChangedEvent, ClientDetachedEvent, ClientListInvalidatedEvent, ColorsChangedEvent, ConfigReloadRequestedEvent, DetachedEvent, EmptyEvent, FrameEvent, FrontendProjectionChangedEvent, GraphicsStatusEvent, LayoutChangedEvent, NotificationEvent, OutputEvent, OverflowEvent, PairingRequestedEvent, PairingResolvedEvent, PaneAddedEvent, PaneClosedEvent, RenderDeltaEvent, RenderStateEvent, ResizedEvent, ScreenAddedEvent, ScreenClosedEvent, ScreenRenamedEvent, ScrollChangedEvent, StatusEvent, SurfaceExitedEvent, SurfaceOutputEvent, SurfaceResizeFailedEvent, SurfaceResizedEvent, TabAddedEvent, TabClosedEvent, TabRenamedEvent, TerminalRegistryChangedEvent, TitleChangedEvent, TreeChangedEvent, VtStateEvent, WindowTitleRequestedEvent, WorkspaceAddedEvent, WorkspaceClosedEvent, WorkspaceMovedEvent, WorkspaceRenamedEvent]
 AnyEvent = Union[KnownEvent, UnknownEvent]
 
 __all__ = [
@@ -2690,6 +2739,7 @@ __all__ = [
     'WaitForRequest',
     'ZoomPaneRequest',
     'AgentChangedEvent',
+    'AgentStateChangedEvent',
     'BellEvent',
     'BrowserStateEvent',
     'ClientAttachedEvent',

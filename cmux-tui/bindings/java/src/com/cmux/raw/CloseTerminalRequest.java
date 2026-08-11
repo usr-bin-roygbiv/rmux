@@ -57,7 +57,7 @@ public final class CloseTerminalRequest implements WireValue {
         if (!Wire.isMissing(rawOrigin)) {
             builder.origin(rawOrigin == null ? null : Wire.string(rawOrigin, "CloseTerminalRequest.origin"));
         }
-        Object rawTerminalId = Wire.required(object, "terminal_id");
+        Object rawTerminalId = Wire.required(object, "terminal_id", "terminal");
         builder.terminalId(Wire.string(rawTerminalId, "CloseTerminalRequest.terminal_id"));
         Object rawTerminalIncarnation = Wire.optional(object, "terminal_incarnation");
         if (!Wire.isMissing(rawTerminalIncarnation)) {

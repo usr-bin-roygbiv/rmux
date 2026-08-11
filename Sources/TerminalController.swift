@@ -11,6 +11,7 @@ import CmuxPanes
 import CmuxRemoteDaemon
 import CmuxRemoteWorkspace
 import CmuxTerminal
+import CmuxTerminalCore
 import CmuxSettings
 import CmuxSwiftRenderUI
 import Carbon.HIToolbox
@@ -5450,36 +5451,21 @@ class TerminalController {
         return .ok(payload)
     }
 
-    struct TerminalTextRawSnapshot {
-        var viewport: String?
-        var screen: String?
-        var history: String?
-        var active: String?
-    }
-
-    struct TerminalTextPayload: Equatable {
-        let text: String
-        let base64: String
-    }
-
-    struct TerminalTextPayloadError: Error, Equatable {
-        let message: String
-    }
 
     func readTerminalTextRawSnapshot(
         terminalPanel: TerminalPanel,
         includeScrollback: Bool
-    ) -> TerminalTextRawSnapshot? {
+    ) -> TerminalTextSnapshot? {
         guard terminalPanel.surface.surface != nil else { return nil }
         if includeScrollback {
-            return TerminalTextRawSnapshot(
+            return TerminalTextSnapshot(
                 viewport: nil,
                 screen: readTerminalSelectionText(terminalPanel: terminalPanel, pointTag: GHOSTTY_POINT_SCREEN),
                 history: readTerminalSelectionText(terminalPanel: terminalPanel, pointTag: GHOSTTY_POINT_SURFACE),
                 active: readTerminalSelectionText(terminalPanel: terminalPanel, pointTag: GHOSTTY_POINT_ACTIVE)
             )
         }
-        return TerminalTextRawSnapshot(
+        return TerminalTextSnapshot(
             viewport: readTerminalSelectionText(terminalPanel: terminalPanel, pointTag: GHOSTTY_POINT_VIEWPORT),
             screen: nil,
             history: nil,
@@ -5518,8 +5504,8 @@ class TerminalController {
         guard let ptr = text.text, text.text_len > 0 else {
             return ""
         }
-        let rawData = Data(bytes: ptr, count: Int(text.text_len))
-        return String(decoding: rawData, as: UTF8.self)
+        let bytes = UnsafeRawBufferPointer(start: ptr, count: Int(text.text_len))
+        return TerminalTextFormatter.decode(bytes)
     }
 
     private func readTerminalTextBase64(terminalPanel: TerminalPanel, includeScrollback: Bool = false, lineLimit: Int? = nil) -> String {
@@ -5532,82 +5518,16 @@ class TerminalController {
         ) else {
             return "ERROR: Terminal surface not found"
         }
-        switch Self.terminalTextPayload(
+        return TerminalTextFormatter.base64Response(
             from: snapshot,
             includeScrollback: includeScrollback,
             lineLimit: lineLimit
-        ) {
-        case .success(let payload):
-            return "OK \(payload.base64)"
-        case .failure(let error):
-            return "ERROR: \(error.message)"
-        }
+        )
     }
 
-    nonisolated static func terminalTextPayload(
-        from snapshot: TerminalTextRawSnapshot,
-        includeScrollback: Bool,
-        lineLimit: Int?
-    ) -> Result<TerminalTextPayload, TerminalTextPayloadError> {
-        let output: String
-        if includeScrollback {
-            var candidates: [String] = []
-            if let screen = snapshot.screen {
-                candidates.append(lineLimit.map { Self.tailTerminalLines(screen, maxLines: $0) } ?? screen)
-            }
-            if snapshot.history != nil || snapshot.active != nil {
-                var merged = lineLimit.map {
-                    Self.tailTerminalLines(snapshot.history ?? "", maxLines: $0)
-                } ?? (snapshot.history ?? "")
-                if let active = snapshot.active {
-                    if !merged.isEmpty, !merged.hasSuffix("\n"), !active.isEmpty {
-                        merged.append("\n")
-                    }
-                    merged.append(lineLimit.map { Self.tailTerminalLines(active, maxLines: $0) } ?? active)
-                }
-                candidates.append(lineLimit.map { Self.tailTerminalLines(merged, maxLines: $0) } ?? merged)
-            }
-
-            guard let best = candidates.max(by: { lhs, rhs in
-                let left = terminalTextCandidateScore(lhs)
-                let right = terminalTextCandidateScore(rhs)
-                if left.lines != right.lines {
-                    return left.lines < right.lines
-                }
-                return left.bytes < right.bytes
-            }) else {
-                return .failure(TerminalTextPayloadError(message: "Failed to read terminal text"))
-            }
-            output = best
-        } else {
-            guard var viewport = snapshot.viewport else {
-                return .failure(TerminalTextPayloadError(message: "Failed to read terminal text"))
-            }
-            if let lineLimit {
-                viewport = Self.tailTerminalLines(viewport, maxLines: lineLimit)
-            }
-            output = viewport
-        }
-
-        let base64 = output.data(using: .utf8)?.base64EncodedString() ?? ""
-        return .success(TerminalTextPayload(text: output, base64: base64))
-    }
-
-    nonisolated private static func terminalTextCandidateScore(_ text: String) -> (lines: Int, bytes: Int) {
-        if text.isEmpty { return (0, 0) }
-        var newlineCount = 0
-        var byteCount = 0
-        for byte in text.utf8 {
-            byteCount += 1
-            if byte == 0x0A {
-                newlineCount += 1
-            }
-        }
-        return (newlineCount + 1, byteCount)
-    }
 
     private struct ReadTextCapture {
-        let rawSnapshot: TerminalTextRawSnapshot
+        let rawSnapshot: TerminalTextSnapshot
         let workspaceID: UUID
         let surfaceID: UUID
         let windowID: UUID?
@@ -5632,7 +5552,7 @@ class TerminalController {
     ///
     /// This splits the work: only the routing resolution and the Ghostty FFI
     /// capture take a (minimal) `v2MainSync` hop; the expensive
-    /// `terminalTextPayload` formatting runs here on the socket-worker thread.
+    /// `TerminalTextFormatter.payload` formatting runs here on the socket-worker thread.
     /// The response shape, error codes, error-evaluation order (TabManager
     /// availability before the `lines` validation), and routing precedence —
     /// including the global-dock branch the witness grew after the original
@@ -5736,7 +5656,7 @@ class TerminalController {
             ) else {
                 return .finished(.err(code: "internal_error", message: "Failed to read terminal text", data: nil))
             }
-            // `terminalTextPayload`'s only failure predicate is snapshot shape
+            // `TerminalTextFormatter.payload`'s only failure predicate is snapshot shape
             // (O(1)), so reject here and mint refs only when a success reply is
             // guaranteed. The legacy build minted nothing on this error path,
             // and dock owner/surface ids are first-minted by the mint pass
@@ -5771,7 +5691,7 @@ class TerminalController {
             return result
         case let .captured(capture):
             // The full-scrollback formatting stays off the main actor.
-            switch Self.terminalTextPayload(
+            switch TerminalTextFormatter.payload(
                 from: capture.rawSnapshot,
                 includeScrollback: includeScrollback,
                 lineLimit: lineLimit
@@ -5830,7 +5750,7 @@ class TerminalController {
             ? Self.normalizedMobileVTExportText(rawOutput)
             : rawOutput
         if let lineLimit {
-            output = Self.tailTerminalLines(output, maxLines: lineLimit)
+            output = TerminalTextFormatter.tailLines(output, maxLines: lineLimit)
         }
         return output
     }
@@ -5840,21 +5760,18 @@ class TerminalController {
         includeScrollback: Bool = false,
         lineLimit: Int? = nil
     ) -> String? {
-        let response = readTerminalTextBase64(
-            terminalPanel: terminalPanel,
-            includeScrollback: includeScrollback,
-            lineLimit: lineLimit
-        )
-        guard response.hasPrefix("OK ") else { return nil }
-        let base64 = String(response.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines)
-        if base64.isEmpty {
-            return ""
-        }
-        guard let data = Data(base64Encoded: base64),
-              let decoded = String(data: data, encoding: .utf8) else {
+        guard terminalPanel.surface.liveSurfaceForGhosttyAccess(reason: "readPlainTerminalTextForSnapshot") != nil,
+              let snapshot = readTerminalTextRawSnapshot(
+                  terminalPanel: terminalPanel,
+                  includeScrollback: includeScrollback
+              ) else {
             return nil
         }
-        return decoded
+        return try? TerminalTextFormatter.output(
+            from: snapshot,
+            includeScrollback: includeScrollback,
+            lineLimit: lineLimit
+        ).get()
     }
 
     func readTerminalTextForSnapshot(
@@ -11286,22 +11203,6 @@ class TerminalController {
         )
     }
 
-    nonisolated static func tailTerminalLines(_ text: String, maxLines: Int) -> String {
-        guard maxLines > 0 else { return "" }
-        var newlineCount = 0
-        var index = text.endIndex
-        while index > text.startIndex {
-            let previous = text.index(before: index)
-            if text[previous] == "\n" {
-                newlineCount += 1
-                if newlineCount == maxLines {
-                    return String(text[index...])
-                }
-            }
-            index = previous
-        }
-        return text
-    }
 
     private func readTerminalTextBase64(surfaceArg: String, includeScrollback: Bool = false, lineLimit: Int? = nil) -> String {
         guard let tabManager = tabManager else { return "ERROR: TabManager not available" }
@@ -11341,7 +11242,7 @@ class TerminalController {
     /// Ghostty snapshot for off-main formatting.
     private enum ReadScreenCaptureOutcome {
         case finished(String)
-        case captured(TerminalTextRawSnapshot)
+        case captured(TerminalTextSnapshot)
     }
 
     /// `read_screen` worker body — the v1 twin of `v2SurfaceReadText`
@@ -11416,7 +11317,7 @@ class TerminalController {
             return .captured(snapshot)
         }
 
-        let snapshot: TerminalTextRawSnapshot
+        let snapshot: TerminalTextSnapshot
         switch outcome {
         case .finished(let reply):
             return reply
@@ -11427,7 +11328,7 @@ class TerminalController {
         // Off-main formatting, byte-faithful to the legacy pipeline: the
         // payload's base64 is produced, trimmed, and decoded back exactly as
         // `readScreenText` → `readTerminalTextBase64` did.
-        switch Self.terminalTextPayload(
+        switch TerminalTextFormatter.payload(
             from: snapshot,
             includeScrollback: options.includeScrollback,
             lineLimit: options.lineLimit

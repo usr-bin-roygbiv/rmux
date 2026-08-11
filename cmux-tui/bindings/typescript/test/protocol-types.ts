@@ -54,7 +54,7 @@ type IdentifyData = CmuxResponseDataFor<"identify">;
 const identify: IdentifyData = {
   app: "cmux-tui",
   version: "0.1.0",
-  protocol: 10,
+  protocol: 12,
   session: "main",
   pid: 1,
   registry_id: "registry",
@@ -67,6 +67,7 @@ void identify;
 
 function eventSurface(event: KnownCmuxEvent): Id | undefined {
   switch (event.event) {
+    case "agent-state-changed":
     case "bell":
     case "surface-output":
     case "surface-exited":

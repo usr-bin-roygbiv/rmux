@@ -191,6 +191,7 @@ class ClientSnapshot(Snapshot[ConnectedClientId]):
 class NotificationSnapshot(Snapshot[NotificationId]):
     session_id: SessionId
     title: str
+    subtitle: Optional[str]
     body: str
     level: Literal["info", "warning", "error"]
     created_at_ms: str
@@ -203,10 +204,18 @@ class NotificationSnapshot(Snapshot[NotificationId]):
 class AgentSnapshot(Snapshot[AgentId]):
     session_id: SessionId
     terminal_id: TerminalId
-    state: Literal["working", "blocked", "idle", "done", "unknown"]
+    state: Literal["working", "blocked", "idle", "done", "error", "unknown"]
     source: Literal["hook", "socket", "detected"]
     updated_at_ms: str
     source_session: Optional[str]
+    root_session: bool
+    label: Optional[str]
+    detail: Optional[str]
+    started_at_ms: Optional[int]
+    tasks_completed: Optional[int]
+    tasks_total: Optional[int]
+    jobs_running: Optional[int]
+    agents_active: Optional[int]
     extra: JsonObject = field(default_factory=dict)
 
 

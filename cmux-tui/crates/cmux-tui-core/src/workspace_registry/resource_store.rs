@@ -1655,14 +1655,60 @@ pub(super) fn apply_resource_patch(
     validate_resource_order_coverage(transaction, patch)?;
     prepare_resource_order_slots(transaction, patch)?;
 
-    // Explicit leaf closes run first so their positions can be reused by
-    // additions in this patch. Parent closes run after upserts so a tab or
-    // pane can move out of the closing parent without losing its identity.
+    // Explicit tabs detach before their content changes so terminal closure is
+    // independent of patch ordering. A content upsert or tombstone owns that
+    // content's lifecycle; an otherwise-unmanaged tab close cascades to it.
+    let managed_terminals = patch
+        .changes
+        .iter()
+        .filter_map(|change| match change {
+            ResourceChange::UpsertTerminal { public_id, .. }
+            | ResourceChange::TombstoneTerminal { public_id, .. } => Some(public_id.as_str()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let managed_browsers = patch
+        .changes
+        .iter()
+        .filter_map(|change| match change {
+            ResourceChange::UpsertBrowser(browser) => Some(browser.public_id.as_str()),
+            ResourceChange::TombstoneBrowser { public_id } => Some(public_id.as_str()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    for change in &patch.changes {
+        if let ResourceChange::TombstoneTab { tab_id, close_content } = change {
+            let Some((content_kind, content_id)) =
+                resource_tab_content(transaction, tab_id.as_str())?
+            else {
+                require_known_resource(transaction, tab_id.as_str(), "tab")?;
+                continue;
+            };
+            let content_managed = match content_kind.as_str() {
+                "terminal" => managed_terminals.contains(content_id.as_str()),
+                "browser" => managed_browsers.contains(content_id.as_str()),
+                _ => false,
+            };
+            let mode = if content_managed {
+                ResourceTabTombstoneMode::DetachForContentChange
+            } else if *close_content {
+                ResourceTabTombstoneMode::CloseContent
+            } else {
+                ResourceTabTombstoneMode::DetachExitedContent
+            };
+            tombstone_resource_tab_with_content(
+                transaction,
+                tab_id.as_str(),
+                revision,
+                content_kind,
+                content_id,
+                mode,
+            )?;
+        }
+    }
+
     for change in &patch.changes {
         match change {
-            ResourceChange::TombstoneTab { tab_id, close_content } => {
-                tombstone_resource_tab(transaction, tab_id.as_str(), revision, *close_content)?;
-            }
             ResourceChange::TombstoneTerminal { public_id, expected_incarnation } => {
                 tombstone_resource_terminal(
                     transaction,
@@ -2554,7 +2600,12 @@ fn tombstone_resource_pane(
             .collect::<Result<Vec<_>, _>>()?
     };
     for tab in tabs {
-        tombstone_resource_tab(transaction, &tab, revision, true)?;
+        tombstone_resource_tab(
+            transaction,
+            &tab,
+            revision,
+            ResourceTabTombstoneMode::ParentCascade,
+        )?;
     }
     transaction.execute(
         "UPDATE resource_panes
@@ -2565,25 +2616,58 @@ fn tombstone_resource_pane(
     tombstone_resource_identity(transaction, pane_id, revision)
 }
 
-fn tombstone_resource_tab(
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ResourceTabTombstoneMode {
+    CloseContent,
+    ParentCascade,
+    DetachExitedContent,
+    DetachForContentChange,
+}
+
+fn resource_tab_content(
     transaction: &Transaction<'_>,
     tab_id: &str,
-    revision: i64,
-    close_content: bool,
-) -> anyhow::Result<()> {
-    let stored = transaction
+) -> anyhow::Result<Option<(String, String)>> {
+    transaction
         .query_row(
             "SELECT content_kind, content_id FROM resource_tabs
              WHERE public_id = ?1 AND deleted_revision IS NULL",
             [tab_id],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
-        .optional()?;
-    let Some((content_kind, content_id)) = stored else {
+        .optional()
+        .map_err(Into::into)
+}
+
+fn tombstone_resource_tab(
+    transaction: &Transaction<'_>,
+    tab_id: &str,
+    revision: i64,
+    mode: ResourceTabTombstoneMode,
+) -> anyhow::Result<()> {
+    let Some((content_kind, content_id)) = resource_tab_content(transaction, tab_id)? else {
         require_known_resource(transaction, tab_id, "tab")?;
         return Ok(());
     };
-    if !close_content {
+    tombstone_resource_tab_with_content(
+        transaction,
+        tab_id,
+        revision,
+        content_kind,
+        content_id,
+        mode,
+    )
+}
+
+fn tombstone_resource_tab_with_content(
+    transaction: &Transaction<'_>,
+    tab_id: &str,
+    revision: i64,
+    content_kind: String,
+    content_id: String,
+    mode: ResourceTabTombstoneMode,
+) -> anyhow::Result<()> {
+    if mode == ResourceTabTombstoneMode::DetachExitedContent {
         match content_kind.as_str() {
             "terminal" => {
                 let terminal_id = live_resource_field(
@@ -2607,10 +2691,18 @@ fn tombstone_resource_tab(
         }
     }
     tombstone_resource_tab_row(transaction, tab_id, revision)?;
-    if close_content && content_kind == "browser" {
-        tombstone_resource_browser(transaction, &content_id, revision)?;
-    } else if !matches!(content_kind.as_str(), "terminal" | "browser") {
-        anyhow::bail!("stored tab {tab_id} has invalid content kind {content_kind:?}");
+    match (mode, content_kind.as_str()) {
+        (ResourceTabTombstoneMode::CloseContent, "terminal") => {
+            tombstone_resource_terminal(transaction, &content_id, None, revision)?;
+        }
+        (ResourceTabTombstoneMode::CloseContent, "browser")
+        | (ResourceTabTombstoneMode::ParentCascade, "browser") => {
+            tombstone_resource_browser(transaction, &content_id, revision)?;
+        }
+        (_, "terminal" | "browser") => {}
+        (_, other) => {
+            anyhow::bail!("stored tab {tab_id} has invalid content kind {other:?}");
+        }
     }
     Ok(())
 }

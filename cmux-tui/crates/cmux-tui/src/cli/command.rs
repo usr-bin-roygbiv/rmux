@@ -263,6 +263,7 @@ fn is_boolean_flag(name: &str) -> bool {
             | "down"
             | "force"
             | "confirm-close"
+            | "root-session"
             | "complete"
             | "clear-name"
             | "clear-kind"
@@ -1298,9 +1299,10 @@ fn parse_notification(words: &[String], flags: &mut Flags) -> Result<CommandPlan
                 return Err(UsageError::new("--title cannot be empty"));
             }
             params.insert("title".into(), Value::String(title));
+            insert_optional_string(&mut params, flags, "subtitle", "subtitle");
             params.insert("body".into(), Value::String(flags.required("body")?));
             if let Some(level) = flags.take("level") {
-                validate_one_of("--level", &level, &["info", "success", "warning", "error"])?;
+                validate_one_of("--level", &level, &["info", "warning", "error"])?;
                 params.insert("level".into(), Value::String(level));
             }
             if let Some(terminal) = flags.take("terminal") {
@@ -1338,7 +1340,7 @@ fn parse_agent(words: &[String], flags: &mut Flags) -> Result<CommandPlan, Usage
                 validate_one_of(
                     "--state",
                     &state,
-                    &["working", "blocked", "idle", "done", "unknown"],
+                    &["working", "blocked", "idle", "done", "error", "unknown"],
                 )?;
                 params.insert("state".into(), Value::String(state));
             }
@@ -1410,7 +1412,11 @@ fn parse_agent(words: &[String], flags: &mut Flags) -> Result<CommandPlan, Usage
             let terminal = flags.required("terminal")?;
             validate_prefixed_id("terminal", "term", &terminal)?;
             let state = flags.required("state")?;
-            validate_one_of("--state", &state, &["working", "blocked", "idle", "done", "unknown"])?;
+            validate_one_of(
+                "--state",
+                &state,
+                &["working", "blocked", "idle", "done", "error", "unknown"],
+            )?;
             let source = flags.required("source")?;
             validate_one_of("--source", &source, &["hook", "socket"])?;
             let mut params = json!({
@@ -1422,6 +1428,21 @@ fn parse_agent(words: &[String], flags: &mut Flags) -> Result<CommandPlan, Usage
             .cloned()
             .expect("literal object");
             insert_optional_string(&mut params, flags, "source-session", "source_session");
+            if flags.boolean("root-session") {
+                params.insert("root_session".into(), Value::Bool(true));
+            }
+            insert_optional_string(&mut params, flags, "label", "label");
+            insert_optional_string(&mut params, flags, "detail", "detail");
+            for flag in
+                ["started-at-ms", "tasks-completed", "tasks-total", "jobs-running", "agents-active"]
+            {
+                if let Some(value) = flags.take(flag) {
+                    value.parse::<u64>().map_err(|_| {
+                        UsageError::new(format!("--{flag} must be an unsigned integer"))
+                    })?;
+                    params.insert(flag.replace('-', "_"), Value::String(value));
+                }
+            }
             request(ResourceOperation::AgentReport, &selectors, flags, params)
         }
         _ => usage("agent action"),
@@ -3628,7 +3649,7 @@ mod tests {
     #[test]
     fn agent_commands_use_canonical_public_states() {
         const TERMINAL: &str = "term_55555555555555555555555555555555";
-        for state in ["working", "blocked", "idle", "done", "unknown"] {
+        for state in ["working", "blocked", "idle", "done", "error", "unknown"] {
             let list = protocol(&["agent", "list", "--terminal", TERMINAL, "--state", state]);
             assert_eq!(list.params["state"], state);
             let report = protocol(&[
@@ -3643,7 +3664,7 @@ mod tests {
             ]);
             assert_eq!(report.params["state"], state);
         }
-        for noncanonical in ["running", "waiting", "error"] {
+        for noncanonical in ["running", "waiting"] {
             assert!(
                 parse(&strings(&[
                     "agent",
@@ -4332,10 +4353,12 @@ mod tests {
                     "create",
                     "--title",
                     "done",
+                    "--subtitle",
+                    "Completed",
                     "--body",
                     "tests passed",
                     "--level",
-                    "success",
+                    "warning",
                     "--terminal",
                     TERMINAL,
                 ],
@@ -4349,11 +4372,26 @@ mod tests {
                     "--terminal",
                     TERMINAL,
                     "--state",
-                    "working",
+                    "error",
                     "--source",
                     "socket",
                     "--source-session",
                     "job-1",
+                    "--root-session",
+                    "--label",
+                    "root",
+                    "--detail",
+                    "reviewing",
+                    "--started-at-ms",
+                    "1700000000000",
+                    "--tasks-completed",
+                    "3",
+                    "--tasks-total",
+                    "5",
+                    "--jobs-running",
+                    "2",
+                    "--agents-active",
+                    "4",
                 ],
                 "agent.report",
             ),

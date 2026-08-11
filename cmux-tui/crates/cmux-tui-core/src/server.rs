@@ -110,7 +110,9 @@ pub const STABLE_SPLIT_IDS_PROTOCOL_VERSION: u32 = 8;
 pub const STACK_LAYOUT_PROTOCOL_VERSION: u32 = 9;
 pub const PER_SURFACE_CLIENT_SIZING_PROTOCOL_VERSION: u32 = 10;
 pub const TERMINAL_LIFECYCLE_PROTOCOL_VERSION: u32 = 11;
+pub const UPSTREAM_VIEWPORT_LAYOUT_PROTOCOL_VERSION: u32 = TERMINAL_LIFECYCLE_PROTOCOL_VERSION;
 pub const LIFECYCLE_READINESS_PROTOCOL_VERSION: u32 = 12;
+pub const AGENT_TELEMETRY_PROTOCOL_VERSION: u32 = LIFECYCLE_READINESS_PROTOCOL_VERSION;
 pub const PROTOCOL_VERSION: u32 = LIFECYCLE_READINESS_PROTOCOL_VERSION;
 const PROTOCOL_KEY_TEXT_MAX_BYTES: usize = CLEAR_HISTORY_KEY_TEXT_MAX_BYTES;
 
@@ -723,6 +725,8 @@ enum Command {
     },
     Notify {
         title: String,
+        #[serde(default)]
+        subtitle: Option<String>,
         body: String,
         #[serde(default)]
         level: Option<String>,
@@ -740,7 +744,23 @@ enum Command {
         state: String,
         source: String,
         #[serde(default)]
+        root_session: bool,
+        #[serde(default)]
         session: Option<String>,
+        #[serde(default)]
+        label: Option<String>,
+        #[serde(default)]
+        detail: Option<String>,
+        #[serde(default)]
+        started_at_ms: Option<u64>,
+        #[serde(default)]
+        tasks_completed: Option<u64>,
+        #[serde(default)]
+        tasks_total: Option<u64>,
+        #[serde(default)]
+        jobs_running: Option<u64>,
+        #[serde(default)]
+        agents_active: Option<u64>,
     },
     /// One-shot VT replay of the surface's current state (base64).
     VtState {
@@ -766,9 +786,11 @@ enum Command {
     ResolveTerminal {
         terminal_id: String,
     },
-    /// Close a hosted terminal by stable identity. This is safe across daemon
-    /// generations; the incarnation guard prevents a stale close request.
+    /// Close a hosted terminal by either its durable public resource identity
+    /// (`terminal`) or the legacy host UUID (`terminal_id`) plus optional
+    /// incarnation guard.
     CloseTerminal {
+        #[serde(alias = "terminal")]
         terminal_id: String,
         #[serde(default)]
         terminal_incarnation: Option<String>,
@@ -4844,7 +4866,7 @@ pub fn window_title_osc(title: &str) -> Vec<u8> {
     format!("\x1b]0;{title}\x07\x1b]2;{title}\x07").into_bytes()
 }
 
-fn sanitize_window_title(title: &str) -> String {
+pub(crate) fn sanitize_window_title(title: &str) -> String {
     title
         .chars()
         .map(|ch| match ch {
@@ -9825,6 +9847,7 @@ fn parse_agent_state(state: &str) -> anyhow::Result<AgentState> {
         "blocked" => Ok(AgentState::Blocked),
         "idle" => Ok(AgentState::Idle),
         "done" => Ok(AgentState::Done),
+        "error" => Ok(AgentState::Error),
         "unknown" => Ok(AgentState::Unknown),
         other => anyhow::bail!("bad state {other}"),
     }
@@ -9841,9 +9864,18 @@ fn parse_agent_source(source: &str) -> anyhow::Result<AgentSource> {
 fn agent_json(record: &AgentRecord) -> Value {
     json!({
         "surface": record.surface,
+        "terminal_id": record.terminal_id,
         "state": record.state.as_str(),
         "source": record.source.as_str(),
+        "root_session": record.telemetry.root_session,
         "session": record.session,
+        "label": record.telemetry.label,
+        "detail": record.telemetry.detail,
+        "started_at_ms": record.telemetry.started_at_ms,
+        "tasks_completed": record.telemetry.tasks_completed,
+        "tasks_total": record.telemetry.tasks_total,
+        "jobs_running": record.telemetry.jobs_running,
+        "agents_active": record.telemetry.agents_active,
         "updated_at_ms": record.updated_at_ms,
     })
 }
@@ -10448,6 +10480,7 @@ fn spawn_attach_notification_stream(
                             "event": "notification",
                             "notification": notification.notification,
                             "title": notification.title,
+                            "subtitle": notification.subtitle,
                             "body": notification.body,
                             "level": notification.level.as_str(),
                             "surface": notification.surface,
@@ -11272,7 +11305,7 @@ fn handle_command_with_cancellation(
             Ok(json!({ "text": text, "mode": mode }))
         }
         Command::Ids { kind } => mux.with_state(|state| ids_json(state, kind.as_deref())),
-        Command::Notify { title, body, level, surface } => {
+        Command::Notify { title, subtitle, body, level, surface } => {
             if title.is_empty() {
                 anyhow::bail!("title is required");
             }
@@ -11280,7 +11313,7 @@ fn handle_command_with_cancellation(
             if let Some(surface) = surface {
                 get_surface(mux, surface)?;
             }
-            let notification = mux.post_notification(title, body, level, surface)?;
+            let notification = mux.post_notification(title, subtitle, body, level, surface)?;
             Ok(json!({ "notification": notification }))
         }
         Command::ListAgents { surface, state } => {
@@ -11294,17 +11327,40 @@ fn handle_command_with_cancellation(
             let agents = mux.list_agents(surface, state).iter().map(agent_json).collect::<Vec<_>>();
             Ok(json!({ "agents": agents }))
         }
-        Command::ReportAgent { surface, state, source, session } => {
+        Command::ReportAgent {
+            surface,
+            state,
+            source,
+            root_session,
+            session,
+            label,
+            detail,
+            started_at_ms,
+            tasks_completed,
+            tasks_total,
+            jobs_running,
+            agents_active,
+        } => {
             get_surface(mux, surface)?;
             let state = parse_agent_state(&state)?;
             let source = parse_agent_source(&source)?;
-            let record = mux.report_agent(surface, state, source, session)?;
-            Ok(json!({
-                "surface": record.surface,
-                "state": record.state.as_str(),
-                "source": record.source.as_str(),
-                "session": record.session,
-            }))
+            let record = mux.report_agent(
+                surface,
+                state,
+                source,
+                session,
+                crate::AgentTelemetry {
+                    root_session,
+                    label,
+                    detail,
+                    started_at_ms,
+                    tasks_completed,
+                    tasks_total,
+                    jobs_running,
+                    agents_active,
+                },
+            )?;
+            Ok(agent_json(&record))
         }
         Command::VtState { .. } => unreachable!("vt-state uses its streaming response path"),
         Command::MintTerminalRenderer { surface, ttl_ms } => {
@@ -11343,13 +11399,26 @@ fn handle_command_with_cancellation(
         }
         Command::CloseTerminal { terminal_id, terminal_incarnation, mutation } => {
             let workspace_mutation = workspace_mutation(&mutation)?;
-            let result = mux.close_terminal_with_mutation(
-                &terminal_id,
-                terminal_incarnation.as_deref(),
-                mutation.expected_generation.as_deref(),
-                mutation.expected_revision,
-                &workspace_mutation,
-            )?;
+            let result = if terminal_id.starts_with("term_") {
+                anyhow::ensure!(
+                    terminal_incarnation.is_none(),
+                    "close-terminal public selector does not accept terminal_incarnation"
+                );
+                mux.close_terminal_resource_with_mutation(
+                    &TerminalPublicId::parse(&terminal_id)?,
+                    mutation.expected_generation.as_deref(),
+                    mutation.expected_revision,
+                    &workspace_mutation,
+                )?
+            } else {
+                mux.close_terminal_with_mutation(
+                    &terminal_id,
+                    terminal_incarnation.as_deref(),
+                    mutation.expected_generation.as_deref(),
+                    mutation.expected_revision,
+                    &workspace_mutation,
+                )?
+            };
             let (registry_id, generation) = mux.registry_identity();
             Ok(json!({
                 "surface": result.surface,
@@ -12751,7 +12820,11 @@ fn subscribed_event_json(event: &MuxEvent) -> Value {
             "retry_after_ms": retry_after_ms,
             "reservation_id": reservation_id,
         }),
-        MuxEvent::SurfaceExited(id) => json!({"event": "surface-exited", "surface": id}),
+        MuxEvent::SurfaceExited { surface, runtime_ms } => json!({
+            "event": "surface-exited",
+            "surface": surface,
+            "runtime_ms": runtime_ms,
+        }),
         MuxEvent::TitleChanged { surface, title } => {
             json!({"event": "title-changed", "surface": surface, "title": title.as_ref()})
         }
@@ -12768,6 +12841,7 @@ fn subscribed_event_json(event: &MuxEvent) -> Value {
             "event": "notification",
             "notification": notification.notification,
             "title": notification.title,
+            "subtitle": notification.subtitle,
             "body": notification.body,
             "level": notification.level.as_str(),
             "surface": notification.surface,
@@ -12797,6 +12871,13 @@ fn subscribed_event_json(event: &MuxEvent) -> Value {
                 "cell_height": cell_pixels.1,
             }),
         },
+        MuxEvent::AgentStateChanged { previous, record } => {
+            let mut value = agent_json(record);
+            let object = value.as_object_mut().expect("agent record serializes as an object");
+            object.insert("event".to_string(), json!("agent-state-changed"));
+            object.insert("previous".to_string(), json!(previous.map(AgentState::as_str)));
+            value
+        }
         MuxEvent::Status(message) => json!({"event": "status", "message": message}),
         MuxEvent::ConfigReloadRequested => json!({"event": "config-reload-requested"}),
         MuxEvent::WindowTitleRequested(title) => {
@@ -15550,7 +15631,7 @@ mod tests {
             let subject = ingress
                 .subjects
                 .iter()
-                .find(|subject| subject.kind == "agent_tree")
+                .find(|subject| subject.kind == "agent_node")
                 .cloned()
                 .unwrap();
             let commit = mux
@@ -18465,7 +18546,9 @@ mod tests {
         assert_eq!(STACK_LAYOUT_PROTOCOL_VERSION, 9);
         assert_eq!(PER_SURFACE_CLIENT_SIZING_PROTOCOL_VERSION, 10);
         assert_eq!(TERMINAL_LIFECYCLE_PROTOCOL_VERSION, 11);
+        assert_eq!(UPSTREAM_VIEWPORT_LAYOUT_PROTOCOL_VERSION, 11);
         assert_eq!(LIFECYCLE_READINESS_PROTOCOL_VERSION, 12);
+        assert_eq!(AGENT_TELEMETRY_PROTOCOL_VERSION, 12);
         assert_eq!(PROTOCOL_VERSION, 12);
         assert!(
             identity["capabilities"].as_array().is_some_and(|capabilities| capabilities
@@ -18503,7 +18586,15 @@ mod tests {
                 surface: surface.id,
                 state: "working".into(),
                 source: "socket".into(),
+                root_session: false,
                 session: Some("raw-command".into()),
+                label: None,
+                detail: None,
+                started_at_ms: None,
+                tasks_completed: None,
+                tasks_total: None,
+                jobs_running: None,
+                agents_active: None,
             },
             &test_writer(),
         )
@@ -19704,6 +19795,44 @@ mod tests {
         let retry = mux.control_clients.register(ClientTransport::Unix, retry_writer.clone());
         assert!(!mux.control_clients.contains(retry));
         assert!(!retry_writer.is_open());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn close_terminal_wire_accepts_public_terminal_selector() {
+        const TERMINAL: &str = "00000000000040008000000000000013";
+        const INCARNATION: &str = "10000000000040008000000000000013";
+        let mux = test_mux();
+        let workspace = mux
+            .create_empty_workspace(None, Some("018f6e21-7b70-7e70-8000-000000001013".into()), None)
+            .unwrap();
+        let surface =
+            mux.seed_running_terminal_for_test(TERMINAL, INCARNATION, &workspace.key).unwrap();
+        let terminal = mux
+            .surface(surface)
+            .unwrap()
+            .terminal_public_id()
+            .expect("seeded terminal has a public resource identity")
+            .to_string();
+        let (writer, outbound) = captured_writer();
+        let client = mux.control_clients.register(ClientTransport::Unix, writer.clone());
+
+        assert!(handle_message(
+            &mux,
+            client,
+            &json!({
+                "id": 97,
+                "cmd": "close-terminal",
+                "terminal": terminal,
+            })
+            .to_string(),
+            &writer,
+        ));
+
+        let response = pop_json(&outbound);
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["data"]["closed"], true);
+        assert!(mux.surface(surface).is_none());
     }
 
     #[cfg(unix)]
@@ -22039,6 +22168,57 @@ mod tests {
                 "cell_height": 16,
             })
         );
+    }
+
+    #[test]
+    fn report_agent_round_trips_protocol_12_fields_and_serializes_event() {
+        let mux = test_mux();
+        let surface = mux.new_workspace(None, Some((20, 4))).unwrap();
+        let events = mux.subscribe();
+
+        let data = handle_command(
+            &mux,
+            0,
+            Command::ReportAgent {
+                surface: surface.id,
+                state: "error".to_string(),
+                source: "socket".to_string(),
+                root_session: true,
+                session: Some("session-1".to_string()),
+                label: Some("root".to_string()),
+                detail: Some("reviewing".to_string()),
+                started_at_ms: Some(1_700_000_000_000),
+                tasks_completed: Some(3),
+                tasks_total: Some(5),
+                jobs_running: Some(2),
+                agents_active: Some(4),
+            },
+            &test_writer(),
+        )
+        .unwrap();
+
+        assert_eq!(data["state"], "error");
+        assert_eq!(data["label"], "root");
+        assert_eq!(data["root_session"], true);
+        assert_eq!(data["tasks_completed"], 3);
+        let changed = events.recv_timeout(Duration::from_secs(1)).unwrap();
+        let encoded = subscribed_event_json(&changed);
+        assert_eq!(encoded["event"], "agent-state-changed");
+        assert_eq!(encoded["terminal_id"], surface.terminal_public_id().unwrap().as_str());
+        assert_eq!(encoded["previous"], Value::Null);
+        assert_eq!(encoded["detail"], "reviewing");
+        assert_eq!(encoded["root_session"], true);
+        assert_eq!(encoded["agents_active"], 4);
+
+        let listed = handle_command(
+            &mux,
+            0,
+            Command::ListAgents { surface: Some(surface.id), state: Some("error".to_string()) },
+            &test_writer(),
+        )
+        .unwrap();
+        assert_eq!(listed["agents"][0]["started_at_ms"], 1_700_000_000_000_u64);
+        assert_eq!(listed["agents"][0]["jobs_running"], 2);
     }
 
     #[test]

@@ -191,6 +191,17 @@ export interface SendOptions {
   /** Request bracketed-paste wrapping when terminal mode 2004 is enabled. */
   paste?: boolean;
 }
+export interface ReportAgentOptions {
+  root_session?: boolean;
+  session?: string | null;
+  label?: string | null;
+  detail?: string | null;
+  started_at_ms?: bigint | null;
+  tasks_completed?: bigint | null;
+  tasks_total?: bigint | null;
+  jobs_running?: bigint | null;
+  agents_active?: bigint | null;
+}
 export interface StreamOpenOptions {
   /** Cancels an in-flight stream open and the resulting stream lifetime. */
   signal?: AbortSignal;
@@ -1270,14 +1281,18 @@ export class CmuxClient {
   sendKey(surface: IdRef, keys: string[]): Promise<EmptyResult> { return this.request("send-key", { surface, keys }); }
   copy(surface: IdRef, mode: CopyMode): Promise<CopyResult> { return this.request("copy", { surface, mode }); }
   ids(kind?: IdKind | null): Promise<IdsResult> { return this.request("ids", { kind }); }
-  notify(
+  async notify(
     title: string,
     body: string,
-    options: { level?: NotificationLevel | null; surface?: IdRef | null } = {},
+    options: { subtitle?: string | null; level?: NotificationLevel | null; surface?: IdRef | null } = {},
   ): Promise<NotifyResult> {
+    if (options.subtitle !== undefined && options.subtitle !== null) {
+      await this.requireProtocol(12, "notification subtitles");
+    }
     return this.request("notify", { title, body, ...options });
   }
-  listAgents(options: CmuxRequestParams<"list-agents"> = {}): Promise<ListAgentsResult> {
+  async listAgents(options: CmuxRequestParams<"list-agents"> = {}): Promise<ListAgentsResult> {
+    if (options.state === "error") await this.requireProtocol(12, "agent error state");
     return this.request("list-agents", options);
   }
   reportAgent(
@@ -1285,8 +1300,29 @@ export class CmuxClient {
     state: AgentState,
     source: AgentReportSource,
     session?: string | null,
+  ): Promise<ReportAgentResult>;
+  reportAgent(
+    surface: IdRef,
+    state: AgentState,
+    source: AgentReportSource,
+    options?: ReportAgentOptions,
+  ): Promise<ReportAgentResult>;
+  async reportAgent(
+    surface: IdRef,
+    state: AgentState,
+    source: AgentReportSource,
+    sessionOrOptions: string | ReportAgentOptions | null = {},
   ): Promise<ReportAgentResult> {
-    return this.request("report-agent", { surface, state, source, session });
+    const options = typeof sessionOrOptions === "string" || sessionOrOptions === null
+      ? { session: sessionOrOptions }
+      : sessionOrOptions;
+    if (state === "error") await this.requireProtocol(12, "agent error state");
+    if (Object.entries(options).some(
+      ([key, value]) => key !== "session" && value !== undefined && value !== null,
+    )) {
+      await this.requireProtocol(12, "agent telemetry");
+    }
+    return this.request("report-agent", { surface, state, source, ...options });
   }
 
   private async openStream<T extends { event: string }>(

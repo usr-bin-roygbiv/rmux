@@ -3306,8 +3306,8 @@ impl Terminal {
         if cols == 0 || range.start > range.end {
             return Err(Error::InvalidValue);
         }
-        let suffix = self.cursor_position_escape()?;
-        let suffix_len = suffix.as_ref().map_or(0, Vec::len);
+        let suffix = self.cursor_replay_suffix()?;
+        let suffix_len = suffix.as_ref().map_or(0, CursorReplaySuffix::reserved_len);
         let Some(format_max_bytes) = max_bytes.checked_sub(suffix_len) else {
             return Ok(None);
         };
@@ -3383,7 +3383,8 @@ impl Terminal {
             }
         }
         if let Some(suffix) = suffix {
-            bytes.extend_from_slice(&suffix);
+            let position = suffix.position_for(&bytes);
+            suffix.append_to(&mut bytes, position);
         }
         Ok(Some(ReplayText { bytes, range: Some(range), insertion_offsets }))
     }
@@ -3405,84 +3406,73 @@ impl Terminal {
         })
     }
 
-    fn cursor_position_escape(&mut self) -> Result<Option<Vec<u8>>> {
-        let Some((x, y)) = self.cursor_position() else { return Ok(None) };
-        let origin_mode = self.mode(6, false);
-        if !self.get::<bool>(sys::GHOSTTY_TERMINAL_DATA_CURSOR_PENDING_WRAP).unwrap_or(false) {
-            // The formatter already emits the cursor. An appended CUP would
-            // reinterpret active-area coordinates relative to the scrolling
-            // region while DECOM is enabled.
-            if origin_mode {
-                return Ok(None);
+    fn cursor_replay_suffix(&mut self) -> Result<Option<CursorReplaySuffix>> {
+        let Some((x, y)) = self.cursor_position() else {
+            return Ok(None);
+        };
+        let pending_wrap =
+            self.get::<bool>(sys::GHOSTTY_TERMINAL_DATA_CURSOR_PENDING_WRAP).unwrap_or(false);
+        let mut start_x = x;
+        let mut cell = Vec::new();
+
+        if pending_wrap {
+            // No standard cursor-positioning sequence can restore pending
+            // wrap: CUP clears it. Reprint the authoritative cursor cell last
+            // so the mirrored terminal enters pending-wrap state again.
+            let cursor_ref = self
+                .grid_ref(sys::GHOSTTY_POINT_TAG_ACTIVE, x, u64::from(y))
+                .ok_or(Error::InvalidValue)?;
+            let palette = terminal_palette(self.raw, sys::GHOSTTY_TERMINAL_DATA_COLOR_PALETTE)?;
+            let mut grapheme = Vec::new();
+            let cursor_cell = read_grid_ref_cell(&cursor_ref, &palette, &mut grapheme)?;
+            if cursor_cell.width == CellWidth::SpacerTail {
+                start_x = x.checked_sub(1).ok_or(Error::InvalidValue)?;
             }
-            return Ok(Some(
-                format!("\x1b[{};{}H", u32::from(y) + 1, u32::from(x) + 1).into_bytes(),
-            ));
+            let selection = sys::GhosttySelection {
+                size: size_of::<sys::GhosttySelection>(),
+                start: self
+                    .grid_ref(sys::GHOSTTY_POINT_TAG_ACTIVE, start_x, u64::from(y))
+                    .ok_or(Error::InvalidValue)?,
+                end: cursor_ref,
+                rectangle: false,
+            };
+            let opts = sys::GhosttyFormatterTerminalOptions {
+                size: size_of::<sys::GhosttyFormatterTerminalOptions>(),
+                emit: sys::GHOSTTY_FORMATTER_FORMAT_VT,
+                unwrap: false,
+                trim: false,
+                extra: sys::GhosttyFormatterTerminalExtra {
+                    size: size_of::<sys::GhosttyFormatterTerminalExtra>(),
+                    palette: false,
+                    modes: false,
+                    scrolling_region: false,
+                    tabstops: false,
+                    pwd: false,
+                    keyboard: false,
+                    screen: sys::GhosttyFormatterScreenExtra {
+                        size: size_of::<sys::GhosttyFormatterScreenExtra>(),
+                        cursor: false,
+                        style: true,
+                        hyperlink: true,
+                        protection: true,
+                        kitty_keyboard: true,
+                        charsets: true,
+                    },
+                },
+                selection: &selection,
+            };
+            cell = self.format(opts)?;
         }
 
-        // No standard cursor-positioning sequence can restore pending wrap:
-        // CUP clears it. Reprint the authoritative cursor cell last instead.
-        // The one-cell formatter includes a wide cell's lead grapheme, then
-        // restores active cursor state without moving the cursor again.
-        let cursor_ref = self
-            .grid_ref(sys::GHOSTTY_POINT_TAG_ACTIVE, x, u64::from(y))
-            .ok_or(Error::InvalidValue)?;
-        let palette = terminal_palette(self.raw, sys::GHOSTTY_TERMINAL_DATA_COLOR_PALETTE)?;
-        let mut grapheme = Vec::new();
-        let cursor_cell = read_grid_ref_cell(&cursor_ref, &palette, &mut grapheme)?;
-        let start_x = if cursor_cell.width == CellWidth::SpacerTail {
-            x.checked_sub(1).ok_or(Error::InvalidValue)?
-        } else {
-            x
-        };
-        let selection = sys::GhosttySelection {
-            size: size_of::<sys::GhosttySelection>(),
-            start: self
-                .grid_ref(sys::GHOSTTY_POINT_TAG_ACTIVE, start_x, u64::from(y))
-                .ok_or(Error::InvalidValue)?,
-            end: cursor_ref,
-            rectangle: false,
-        };
-        let opts = sys::GhosttyFormatterTerminalOptions {
-            size: size_of::<sys::GhosttyFormatterTerminalOptions>(),
-            emit: sys::GHOSTTY_FORMATTER_FORMAT_VT,
-            unwrap: false,
-            trim: false,
-            extra: sys::GhosttyFormatterTerminalExtra {
-                size: size_of::<sys::GhosttyFormatterTerminalExtra>(),
-                palette: false,
-                modes: false,
-                scrolling_region: false,
-                tabstops: false,
-                pwd: false,
-                keyboard: false,
-                screen: sys::GhosttyFormatterScreenExtra {
-                    size: size_of::<sys::GhosttyFormatterScreenExtra>(),
-                    cursor: false,
-                    style: true,
-                    hyperlink: true,
-                    protection: true,
-                    kitty_keyboard: true,
-                    charsets: true,
-                },
-            },
-            selection: &selection,
-        };
-        let mut suffix = if origin_mode {
-            // The main formatter leaves the cursor at the authoritative cell.
-            // Move only to a wide glyph's lead cell, using a relative motion
-            // whose meaning is independent of the scrolling-region origin.
-            let columns_left = x.saturating_sub(start_x);
-            if columns_left == 0 {
-                Vec::new()
-            } else {
-                format!("\x1b[{}D", u32::from(columns_left)).into_bytes()
-            }
-        } else {
-            format!("\x1b[{};{}H", u32::from(y) + 1, u32::from(start_x) + 1).into_bytes()
-        };
-        suffix.extend_from_slice(&self.format(opts)?);
-        Ok(Some(suffix))
+        Ok(Some(CursorReplaySuffix {
+            absolute_position: format!("\x1b[{};{}H", u32::from(y) + 1, u32::from(start_x) + 1)
+                .into_bytes(),
+            cell,
+            x: start_x,
+            y,
+            origin_mode: self.mode(6, false),
+            horizontal_margin_mode: self.mode(69, false),
+        }))
     }
 
     fn vt_replay_segment_options(
@@ -3653,6 +3643,85 @@ fn configure_kitty_graphics(raw: sys::GhosttyTerminal) -> Result<()> {
 fn minimal_vt_replay(max_bytes: usize) -> Vec<u8> {
     const RESET: &[u8] = b"\x1bc";
     if max_bytes >= RESET.len() { RESET.to_vec() } else { Vec::new() }
+}
+
+struct CursorReplaySuffix {
+    absolute_position: Vec<u8>,
+    cell: Vec<u8>,
+    x: u16,
+    y: u16,
+    origin_mode: bool,
+    horizontal_margin_mode: bool,
+}
+
+impl CursorReplaySuffix {
+    fn reserved_len(&self) -> usize {
+        self.absolute_position.len().saturating_add(self.cell.len())
+    }
+
+    fn position_for(&self, replay: &[u8]) -> Option<(u16, u16)> {
+        if !self.origin_mode {
+            return None;
+        }
+        let (top, left) = replay_origin(replay, self.horizontal_margin_mode);
+        Some((self.y.saturating_sub(top), self.x.saturating_sub(left)))
+    }
+
+    fn append_to(self, output: &mut Vec<u8>, origin_relative: Option<(u16, u16)>) {
+        if let Some((row, col)) = origin_relative {
+            let position = format!("\x1b[{};{}H", u32::from(row) + 1, u32::from(col) + 1);
+            debug_assert!(position.len() <= self.absolute_position.len());
+            output.extend_from_slice(position.as_bytes());
+        } else {
+            output.extend_from_slice(&self.absolute_position);
+        }
+        output.extend_from_slice(&self.cell);
+    }
+}
+
+fn replay_origin(replay: &[u8], horizontal_margin_mode: bool) -> (u16, u16) {
+    let mut top = 0;
+    let mut left = 0;
+    let mut offset = 0;
+    while offset < replay.len() {
+        let parameters = if replay[offset] == 0x9b {
+            offset + 1
+        } else if replay[offset] == b'\x1b' && replay.get(offset + 1) == Some(&b'[') {
+            offset + 2
+        } else {
+            offset += 1;
+            continue;
+        };
+        let mut final_byte = parameters;
+        while replay.get(final_byte).is_some_and(|byte| byte.is_ascii_digit() || *byte == b';') {
+            final_byte += 1;
+        }
+        let Some(command) = replay.get(final_byte).copied() else {
+            break;
+        };
+        match command {
+            b'r' => top = first_csi_parameter(&replay[parameters..final_byte]),
+            b's' if horizontal_margin_mode => {
+                left = first_csi_parameter(&replay[parameters..final_byte]);
+            }
+            _ => {}
+        }
+        offset = final_byte + 1;
+    }
+    (top, left)
+}
+
+fn first_csi_parameter(parameters: &[u8]) -> u16 {
+    let mut value = 0_u16;
+    let mut present = false;
+    for byte in parameters.iter().copied().take_while(|byte| *byte != b';') {
+        if !byte.is_ascii_digit() {
+            return 0;
+        }
+        present = true;
+        value = value.saturating_mul(10).saturating_add(u16::from(byte - b'0'));
+    }
+    if present { value.saturating_sub(1) } else { 0 }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

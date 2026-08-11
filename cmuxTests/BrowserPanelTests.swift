@@ -37,6 +37,94 @@ struct BrowserWebViewUserAgentRegressionTests {
     }
 }
 
+private final class TestMagnificationEvent: NSEvent {
+    private let delta: CGFloat
+
+    init(delta: CGFloat) {
+        self.delta = delta
+        super.init()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var magnification: CGFloat { delta }
+}
+
+@MainActor
+final class BrowserPanelTrackpadMagnificationTests: XCTestCase {
+    func testMagnifyResponderRoutesOnlyToInstalledHandler() {
+        let webView = CmuxWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        let event = TestMagnificationEvent(delta: 0.2)
+        var receivedDelta: CGFloat?
+
+        XCTAssertFalse(webView.handleMagnificationDelta(event.magnification))
+
+        webView.onMagnificationDelta = { receivedDelta = $0 }
+        webView.magnify(with: event)
+
+        XCTAssertEqual(receivedDelta, 0.2)
+    }
+
+    func testMagnificationDeltasAdjustCurrentPageZoomAdditively() throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        let webView = try XCTUnwrap(panel.webView as? CmuxWebView)
+        _ = panel.setPageZoomFactor(1.0)
+
+        XCTAssertTrue(webView.handleMagnificationDelta(0.3))
+        XCTAssertEqual(panel.currentPageZoomFactor(), 1.3, accuracy: 0.000_001)
+
+        XCTAssertTrue(webView.handleMagnificationDelta(-0.15))
+        XCTAssertEqual(panel.currentPageZoomFactor(), 1.15, accuracy: 0.000_001)
+    }
+
+    func testMagnificationRejectsInvalidDeltasAndUsesExistingZoomLimits() throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        let webView = try XCTUnwrap(panel.webView as? CmuxWebView)
+        XCTAssertTrue(panel.setPageZoomFactor(1.25))
+
+        for delta in [CGFloat.nan, .infinity, -.infinity] {
+            XCTAssertTrue(webView.handleMagnificationDelta(delta))
+            XCTAssertEqual(panel.currentPageZoomFactor(), 1.25, accuracy: 0.000_001)
+        }
+
+        XCTAssertTrue(panel.setPageZoomFactor(4.9))
+        XCTAssertTrue(webView.handleMagnificationDelta(1.0))
+        XCTAssertEqual(panel.currentPageZoomFactor(), 5.0, accuracy: 0.000_001)
+    }
+
+    func testMagnificationRetainsAutomationViewportRenderLimit() throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        let webView = try XCTUnwrap(panel.webView as? CmuxWebView)
+        let viewport = try XCTUnwrap(BrowserViewport(width: 4_096, height: 4_096))
+        panel.viewportModel.setViewport(viewport)
+        XCTAssertTrue(panel.setPageZoomFactor(1.4))
+
+        XCTAssertTrue(webView.handleMagnificationDelta(0.1))
+        XCTAssertEqual(panel.currentPageZoomFactor(), 1.4, accuracy: 0.000_001)
+    }
+
+    func testStaleWebViewMagnificationIsIgnoredAfterProfileReplacement() throws {
+        let alternateProfile = try makeTemporaryBrowserPanelProfile(
+            named: "Magnification",
+            cleanUpWith: self
+        )
+        let panel = BrowserPanel(
+            workspaceId: UUID(),
+            profileID: BrowserProfileStore.shared.builtInDefaultProfileID
+        )
+        let staleWebView = try XCTUnwrap(panel.webView as? CmuxWebView)
+
+        XCTAssertTrue(panel.switchToProfile(alternateProfile.id))
+        XCTAssertFalse(panel.webView === staleWebView)
+        XCTAssertTrue(panel.setPageZoomFactor(1.25))
+
+        XCTAssertTrue(staleWebView.handleMagnificationDelta(0.5))
+        XCTAssertEqual(panel.currentPageZoomFactor(), 1.25, accuracy: 0.000_001)
+    }
+}
+
 private func drainBrowserPanelMainQueue() {
     let expectation = XCTestExpectation(description: "drain main queue")
     DispatchQueue.main.async {
@@ -2985,20 +3073,47 @@ final class BrowserWindowPortalLifecycleTests: XCTestCase {
     private final class TrackingPortalWebView: WKWebView {
         private(set) var displayIfNeededCount = 0
         private(set) var reattachRenderingStateCount = 0
+        private(set) var viewDidUnhideCount = 0
+        private(set) var enterInWindowCount = 0
+        private(set) var endDeferringViewInWindowChangesCount = 0
+        private(set) var setNeedsDisplayCount = 0
+
+        override func setNeedsDisplay(_ invalidRect: NSRect) {
+            setNeedsDisplayCount += 1
+            super.setNeedsDisplay(invalidRect)
+        }
 
         override func displayIfNeeded() {
             displayIfNeededCount += 1
             super.displayIfNeeded()
         }
 
+        override func viewDidUnhide() {
+            viewDidUnhideCount += 1
+            reattachRenderingStateCount += 1
+        }
+
         @objc(_enterInWindow)
         func cmuxUnitTestEnterInWindow() {
+            enterInWindowCount += 1
             reattachRenderingStateCount += 1
         }
 
         @objc(_endDeferringViewInWindowChangesSync)
         func cmuxUnitTestEndDeferringViewInWindowChangesSync() {
+            endDeferringViewInWindowChangesCount += 1
             reattachRenderingStateCount += 1
+        }
+    }
+
+    private final class TrackingPortalAnchorView: NSView {
+        private(set) var windowConversionCount = 0
+
+        override func convert(_ rect: NSRect, to view: NSView?) -> NSRect {
+            if view == nil {
+                windowConversionCount += 1
+            }
+            return super.convert(rect, to: view)
         }
     }
 
@@ -3014,6 +3129,22 @@ final class BrowserWindowPortalLifecycleTests: XCTestCase {
 
     private func advanceAnimations() {
         RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+
+    private func waitForNextMainTurn() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                continuation.resume()
+            }
+        }
+    }
+
+    private func drainFormerPresentationRetryWindow() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                continuation.resume()
+            }
+        }
     }
 
     private func dropZoneOverlay(in slot: WindowBrowserSlotView, excluding webView: WKWebView) -> NSView? {
@@ -3528,7 +3659,48 @@ final class BrowserWindowPortalLifecycleTests: XCTestCase {
         )
     }
 
-    func testPortalAnchorResizeDoesNotForceHostedWebViewPresentationRefresh() {
+    func testSingleEntryAnchorResizeDoesNotScheduleRedundantFullSync() async {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 320),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        defer { window.orderOut(nil) }
+        realizeWindowLayout(window)
+        let portal = WindowBrowserPortal(window: window)
+        guard let contentView = window.contentView else {
+            XCTFail("Expected content view")
+            return
+        }
+
+        let anchor = TrackingPortalAnchorView(frame: NSRect(x: 40, y: 24, width: 220, height: 160))
+        contentView.addSubview(anchor)
+        let webView = CmuxWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        portal.bind(webView: webView, to: anchor, visibleInUI: true)
+        await waitForNextMainTurn()
+
+        let conversionCountBeforeResize = anchor.windowConversionCount
+        anchor.frame = NSRect(x: 52, y: 30, width: 248, height: 178)
+        contentView.layoutSubtreeIfNeeded()
+        portal.synchronizeWebViewForAnchor(anchor)
+        let conversionCountAfterResize = anchor.windowConversionCount
+        XCTAssertEqual(
+            conversionCountAfterResize - conversionCountBeforeResize,
+            1,
+            "A single hosted browser should synchronize its changed anchor once"
+        )
+
+        await waitForNextMainTurn()
+
+        XCTAssertEqual(
+            anchor.windowConversionCount,
+            conversionCountAfterResize,
+            "A single hosted browser should not receive a redundant deferred all-entry pass"
+        )
+    }
+
+    func testPortalAnchorResizeDoesNotForceHostedWebViewPresentationRefresh() async {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 520, height: 320),
             styleMask: [.titled, .closable],
@@ -3550,19 +3722,22 @@ final class BrowserWindowPortalLifecycleTests: XCTestCase {
         portal.bind(webView: webView, to: anchor, visibleInUI: true)
         contentView.layoutSubtreeIfNeeded()
         portal.synchronizeWebViewForAnchor(anchor)
-        advanceAnimations()
+        await waitForNextMainTurn()
 
         guard let slot = webView.superview as? WindowBrowserSlotView else {
             XCTFail("Expected browser slot")
             return
         }
 
+        let initialSetNeedsDisplayCount = webView.setNeedsDisplayCount
         let initialDisplayCount = webView.displayIfNeededCount
         let initialReattachCount = webView.reattachRenderingStateCount
         anchor.frame = NSRect(x: 52, y: 30, width: 248, height: 178)
         contentView.layoutSubtreeIfNeeded()
         portal.synchronizeWebViewForAnchor(anchor)
-        advanceAnimations()
+        let setNeedsDisplayCountAfterResize = webView.setNeedsDisplayCount
+        let displayCountAfterResize = webView.displayIfNeededCount
+        let reattachCountAfterResize = webView.reattachRenderingStateCount
 
         XCTAssertFalse(slot.isHidden, "Anchor resize should keep the portal-hosted browser visible")
         XCTAssertEqual(slot.frame.origin.x, 52, accuracy: 0.5)
@@ -3570,18 +3745,91 @@ final class BrowserWindowPortalLifecycleTests: XCTestCase {
         XCTAssertEqual(slot.frame.size.width, 248, accuracy: 0.5)
         XCTAssertEqual(slot.frame.size.height, 178, accuracy: 0.5)
         XCTAssertGreaterThan(
-            webView.displayIfNeededCount,
-            initialDisplayCount,
-            "Pure anchor geometry updates should still repaint the hosted browser"
+            setNeedsDisplayCountAfterResize,
+            initialSetNeedsDisplayCount,
+            "Pure anchor geometry updates should invalidate the hosted browser for redraw"
         )
         XCTAssertEqual(
-            webView.reattachRenderingStateCount,
+            displayCountAfterResize,
+            initialDisplayCount,
+            "Pure anchor geometry updates must not synchronously flush WebKit display"
+        )
+        XCTAssertEqual(
+            reattachCountAfterResize,
             initialReattachCount,
             "Pure anchor geometry updates should not trigger the WebKit reattach path"
         )
+
+        await waitForNextMainTurn()
+
+        XCTAssertEqual(
+            webView.reattachRenderingStateCount,
+            reattachCountAfterResize,
+            "Pure anchor geometry updates must not enqueue a delayed WebKit reattach"
+        )
     }
 
-    func testExternalSplitResizeDoesNotForceHostedWebViewPresentationRefresh() {
+    func testActiveViewportAnchorResizeKeepsHostedWebViewAttached() async throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 320),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        defer { window.orderOut(nil) }
+        realizeWindowLayout(window)
+        let portal = WindowBrowserPortal(window: window)
+        guard let contentView = window.contentView else {
+            XCTFail("Expected content view")
+            return
+        }
+
+        let anchor = NSView(frame: contentView.bounds.insetBy(dx: 40, dy: 24))
+        contentView.addSubview(anchor)
+
+        let webView = CmuxWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        let viewportModel = BrowserViewportModel()
+        let viewportHost = BrowserViewportHostView(frame: .zero)
+        webView.browserViewportModel = viewportModel
+        viewportModel.setViewport(try XCTUnwrap(BrowserViewport(width: 1_280, height: 720)))
+        viewportHost.installWebView(webView)
+        portal.bind(webView: webView, to: anchor, visibleInUI: true)
+        contentView.layoutSubtreeIfNeeded()
+        portal.synchronizeWebViewForAnchor(anchor)
+        await waitForNextMainTurn()
+
+        XCTAssertTrue(webView.superview === viewportHost)
+        guard let slot = viewportHost.superview as? WindowBrowserSlotView else {
+            XCTFail("Expected active browser viewport host in a portal slot")
+            return
+        }
+
+        anchor.frame = NSRect(x: 32, y: 20, width: 400, height: 240)
+        contentView.layoutSubtreeIfNeeded()
+        portal.synchronizeWebViewForAnchor(anchor)
+
+        XCTAssertEqual(slot.frame.origin.x, 32, accuracy: 0.5)
+        XCTAssertEqual(slot.frame.origin.y, 20, accuracy: 0.5)
+        XCTAssertEqual(slot.frame.size.width, 400, accuracy: 0.5)
+        XCTAssertEqual(slot.frame.size.height, 240, accuracy: 0.5)
+        XCTAssertTrue(webView.superview === viewportHost)
+        XCTAssertTrue(viewportHost.superview === slot)
+    }
+
+    func testActiveViewportPresentationInvalidationMarksHostForDeferredLayoutAndDisplay() {
+        let viewportHost = BrowserViewportHostView(
+            frame: NSRect(x: 0, y: 0, width: 320, height: 180)
+        )
+        viewportHost.needsLayout = false
+        viewportHost.needsDisplay = false
+
+        viewportHost.invalidateBrowserPortalPresentation()
+
+        XCTAssertTrue(viewportHost.needsLayout)
+        XCTAssertTrue(viewportHost.needsToDraw(viewportHost.bounds))
+    }
+
+    func testExternalSplitResizeDoesNotForceHostedWebViewPresentationRefresh() async {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 640, height: 360),
             styleMask: [.titled, .closable],
@@ -3626,13 +3874,14 @@ final class BrowserWindowPortalLifecycleTests: XCTestCase {
         portal.bind(webView: webView, to: anchor, visibleInUI: true)
         contentView.layoutSubtreeIfNeeded()
         portal.synchronizeWebViewForAnchor(anchor)
-        advanceAnimations()
+        await waitForNextMainTurn()
 
         guard let slot = webView.superview as? WindowBrowserSlotView else {
             XCTFail("Expected browser slot")
             return
         }
 
+        let initialSetNeedsDisplayCount = webView.setNeedsDisplayCount
         let initialDisplayCount = webView.displayIfNeededCount
         let initialReattachCount = webView.reattachRenderingStateCount
         let initialWidth = slot.frame.width
@@ -3640,7 +3889,13 @@ final class BrowserWindowPortalLifecycleTests: XCTestCase {
         splitView.setPosition(280, ofDividerAt: 0)
         contentView.layoutSubtreeIfNeeded()
         NotificationCenter.default.post(name: NSSplitView.didResizeSubviewsNotification, object: splitView)
-        advanceAnimations()
+        XCTAssertEqual(
+            webView.displayIfNeededCount,
+            initialDisplayCount,
+            "External split resize request must not synchronously flush WebKit display"
+        )
+
+        await waitForNextMainTurn()
 
         XCTAssertFalse(slot.isHidden, "App split resize should keep the browser slot visible")
         XCTAssertLessThan(
@@ -3649,9 +3904,14 @@ final class BrowserWindowPortalLifecycleTests: XCTestCase {
             "Moving the app split divider should shrink the hosted browser slot"
         )
         XCTAssertGreaterThan(
+            webView.setNeedsDisplayCount,
+            initialSetNeedsDisplayCount,
+            "External split resize should invalidate the hosted browser for redraw"
+        )
+        XCTAssertEqual(
             webView.displayIfNeededCount,
             initialDisplayCount,
-            "External split resize should still repaint the hosted browser"
+            "The completed external split resize pass must not flush WebKit display"
         )
         XCTAssertEqual(
             webView.reattachRenderingStateCount,
@@ -3924,7 +4184,7 @@ final class BrowserWindowPortalLifecycleTests: XCTestCase {
         XCTAssertFalse(overlay.isHidden, "Restoring visibility should restore the active drop-zone overlay")
     }
 
-    func testPortalRevealRefreshesHostedWebViewWithoutFrameDelta() {
+    func testPortalRevealRefreshesHostedWebViewSynchronouslyOnceWithoutFrameDelta() async {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 500, height: 320),
             styleMask: [.titled, .closable],
@@ -3945,30 +4205,31 @@ final class BrowserWindowPortalLifecycleTests: XCTestCase {
         let webView = TrackingPortalWebView(frame: .zero, configuration: WKWebViewConfiguration())
         portal.bind(webView: webView, to: anchor, visibleInUI: true)
         portal.synchronizeWebViewForAnchor(anchor)
-        advanceAnimations()
+        await waitForNextMainTurn()
         let initialDisplayCount = webView.displayIfNeededCount
-        let initialReattachCount = webView.reattachRenderingStateCount
+        let initialEnterInWindowCount = webView.enterInWindowCount
+        let initialEndDeferringCount = webView.endDeferringViewInWindowChangesCount
 
         portal.updateEntryVisibility(forWebViewId: ObjectIdentifier(webView), visibleInUI: false, zPriority: 0)
         portal.synchronizeWebViewForAnchor(anchor)
-        advanceAnimations()
+        await waitForNextMainTurn()
         let hiddenDisplayCount = webView.displayIfNeededCount
+        let hiddenEnterInWindowCount = webView.enterInWindowCount
+        let hiddenEndDeferringCount = webView.endDeferringViewInWindowChangesCount
         let hiddenReattachCount = webView.reattachRenderingStateCount
+        let hiddenSetNeedsDisplayCount = webView.setNeedsDisplayCount
 
         portal.updateEntryVisibility(forWebViewId: ObjectIdentifier(webView), visibleInUI: true, zPriority: 0)
         portal.synchronizeWebViewForAnchor(anchor)
-        advanceAnimations()
+        let revealedEnterInWindowCount = webView.enterInWindowCount
+        let revealedEndDeferringCount = webView.endDeferringViewInWindowChangesCount
+        let revealedSetNeedsDisplayCount = webView.setNeedsDisplayCount
 
         XCTAssertGreaterThanOrEqual(hiddenDisplayCount, initialDisplayCount)
         XCTAssertEqual(
-            hiddenReattachCount,
-            initialReattachCount,
-            "Hiding a portal-hosted browser should not itself trigger the WebKit reattach path"
-        )
-        XCTAssertGreaterThan(
-            webView.displayIfNeededCount,
-            hiddenDisplayCount,
-            "Revealing an existing portal-hosted browser should refresh WebKit presentation immediately"
+            hiddenEnterInWindowCount,
+            initialEnterInWindowCount,
+            "Hiding a portal-hosted browser should not itself enter the WebKit window"
         )
         // A tab/workspace visibility change hides and reveals the slot without
         // taking the web view out of the window, so it must not cycle WebKit's
@@ -3977,13 +4238,315 @@ final class BrowserWindowPortalLifecycleTests: XCTestCase {
         // broke the DevTools pane across workspace switch round-trips. The reveal
         // still has to refresh presentation, asserted above.
         XCTAssertEqual(
-            webView.reattachRenderingStateCount,
-            hiddenReattachCount,
-            "A visibility-only reveal refreshes presentation but must not run the enter/exit-window reattach lifecycle, or every tab switch fires page visibilitychange"
+            hiddenEndDeferringCount,
+            initialEndDeferringCount,
+            "Hiding a portal-hosted browser should not itself end deferred WebKit window changes"
+        )
+        XCTAssertGreaterThan(
+            webView.setNeedsDisplayCount,
+            hiddenSetNeedsDisplayCount,
+            "Revealing an existing portal-hosted browser should invalidate WebKit presentation synchronously"
+        )
+        XCTAssertEqual(
+            webView.displayIfNeededCount,
+            hiddenDisplayCount,
+            "Reveal should let AppKit commit the invalidated frame instead of forcing display synchronously"
+        )
+        XCTAssertEqual(
+            revealedEnterInWindowCount,
+            hiddenEnterInWindowCount,
+            "A visibility-only reveal must not explicitly re-enter the WebKit window"
+        )
+        XCTAssertEqual(
+            revealedEndDeferringCount,
+            hiddenEndDeferringCount,
+            "A visibility-only reveal must not explicitly end deferred WebKit window changes"
+        )
+
+        await drainFormerPresentationRetryWindow()
+
+        XCTAssertEqual(
+            webView.enterInWindowCount,
+            revealedEnterInWindowCount,
+            "Reveal must not enqueue a later duplicate WebKit window-entry repair"
+        )
+        XCTAssertEqual(
+            webView.endDeferringViewInWindowChangesCount,
+            revealedEndDeferringCount,
+            "Reveal must not enqueue a later duplicate deferred-window repair"
+        )
+        XCTAssertEqual(
+            webView.setNeedsDisplayCount,
+            revealedSetNeedsDisplayCount,
+            "Reveal must not enqueue a delayed presentation invalidation"
         )
     }
 
-    func testVisiblePortalEntryHidesWithoutDetachingDuringTransientAnchorRemovalUntilRebind() {
+    func testForcedPortalRefreshRunsSynchronouslyOnce() async {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 320),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        defer { window.orderOut(nil) }
+        realizeWindowLayout(window)
+        let portal = WindowBrowserPortal(window: window)
+
+        guard let contentView = window.contentView else {
+            XCTFail("Expected content view")
+            return
+        }
+        let anchor = NSView(frame: NSRect(x: 40, y: 24, width: 220, height: 160))
+        contentView.addSubview(anchor)
+
+        let webView = TrackingPortalWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        let webViewId = ObjectIdentifier(webView)
+        portal.bind(webView: webView, to: anchor, visibleInUI: true)
+        portal.synchronizeWebViewForAnchor(anchor)
+        await waitForNextMainTurn()
+        let initialEnterInWindowCount = webView.enterInWindowCount
+        let initialEndDeferringCount = webView.endDeferringViewInWindowChangesCount
+
+        portal.forceRefreshWebView(withId: webViewId, reason: "unitTest")
+        let refreshedEnterInWindowCount = webView.enterInWindowCount
+        let refreshedEndDeferringCount = webView.endDeferringViewInWindowChangesCount
+        let refreshedSetNeedsDisplayCount = webView.setNeedsDisplayCount
+
+        XCTAssertEqual(
+            refreshedEnterInWindowCount - initialEnterInWindowCount,
+            1,
+            "A forced refresh should invoke the WebKit window-entry selector once in the portal sync"
+        )
+        XCTAssertEqual(
+            refreshedEndDeferringCount - initialEndDeferringCount,
+            1,
+            "A forced refresh should invoke the WebKit deferred-window selector once in the portal sync"
+        )
+
+        await drainFormerPresentationRetryWindow()
+
+        XCTAssertEqual(webView.enterInWindowCount, refreshedEnterInWindowCount)
+        XCTAssertEqual(webView.endDeferringViewInWindowChangesCount, refreshedEndDeferringCount)
+        XCTAssertEqual(
+            webView.setNeedsDisplayCount,
+            refreshedSetNeedsDisplayCount,
+            "Forced refresh must not enqueue a delayed presentation invalidation"
+        )
+    }
+
+    func testForcedPortalRefreshBypassesInspectorDividerAdjustmentSkip() async {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 320),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        defer { window.orderOut(nil) }
+        realizeWindowLayout(window)
+        let portal = WindowBrowserPortal(window: window)
+
+        guard let contentView = window.contentView else {
+            XCTFail("Expected content view")
+            return
+        }
+        let anchor = NSView(frame: NSRect(x: 40, y: 24, width: 260, height: 180))
+        contentView.addSubview(anchor)
+
+        let webView = TrackingPortalWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        let webViewId = ObjectIdentifier(webView)
+        portal.bind(webView: webView, to: anchor, visibleInUI: true)
+        await waitForNextMainTurn()
+
+        guard let slot = webView.superview as? WindowBrowserSlotView else {
+            XCTFail("Expected browser slot")
+            return
+        }
+        let initialInspectorWidth: CGFloat = 80
+        let preferredInspectorWidth: CGFloat = 120
+        webView.frame = NSRect(
+            x: 0,
+            y: 0,
+            width: slot.bounds.width - initialInspectorWidth,
+            height: slot.bounds.height
+        )
+        let inspectorContainer = NSView(
+            frame: NSRect(
+                x: webView.frame.maxX,
+                y: 0,
+                width: initialInspectorWidth,
+                height: slot.bounds.height
+            )
+        )
+        let inspectorView = WKInspectorProbeView(frame: inspectorContainer.bounds)
+        inspectorView.autoresizingMask = [.width, .height]
+        inspectorContainer.addSubview(inspectorView)
+        slot.addSubview(inspectorContainer)
+        slot.onHostedInspectorLayout = nil
+        slot.recordPreferredHostedInspectorWidth(
+            preferredInspectorWidth,
+            containerBounds: slot.bounds
+        )
+        let initialEnterInWindowCount = webView.enterInWindowCount
+        let initialEndDeferringCount = webView.endDeferringViewInWindowChangesCount
+
+        portal.forceRefreshWebView(withId: webViewId, reason: "inspectorRedock")
+        let refreshedEnterInWindowCount = webView.enterInWindowCount
+        let refreshedEndDeferringCount = webView.endDeferringViewInWindowChangesCount
+        let refreshedSetNeedsDisplayCount = webView.setNeedsDisplayCount
+
+        XCTAssertEqual(inspectorContainer.frame.width, preferredInspectorWidth, accuracy: 0.5)
+        XCTAssertEqual(
+            refreshedEnterInWindowCount - initialEnterInWindowCount,
+            1,
+            "An explicit refresh must still enter WebKit after adjusting the hosted inspector divider"
+        )
+        XCTAssertEqual(
+            refreshedEndDeferringCount - initialEndDeferringCount,
+            1,
+            "An explicit refresh must still end deferred WebKit changes after adjusting the inspector divider"
+        )
+
+        await drainFormerPresentationRetryWindow()
+
+        XCTAssertEqual(webView.enterInWindowCount, refreshedEnterInWindowCount)
+        XCTAssertEqual(webView.endDeferringViewInWindowChangesCount, refreshedEndDeferringCount)
+        XCTAssertEqual(
+            webView.setNeedsDisplayCount,
+            refreshedSetNeedsDisplayCount,
+            "Inspector refresh must not enqueue a delayed presentation invalidation"
+        )
+    }
+
+    func testRegistryBindOwnsOneSynchronousPresentationRefresh() async {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 320),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        realizeWindowLayout(window)
+
+        guard let contentView = window.contentView else {
+            XCTFail("Expected content view")
+            return
+        }
+        let anchor = NSView(frame: NSRect(x: 40, y: 24, width: 220, height: 160))
+        contentView.addSubview(anchor)
+        let webView = TrackingPortalWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        defer {
+            BrowserWindowPortalRegistry.detach(webView: webView)
+            window.orderOut(nil)
+        }
+        let initialEnterInWindowCount = webView.enterInWindowCount
+        let initialEndDeferringCount = webView.endDeferringViewInWindowChangesCount
+        let initialSetNeedsDisplayCount = webView.setNeedsDisplayCount
+
+        BrowserWindowPortalRegistry.bind(
+            webView: webView,
+            to: anchor,
+            visibleInUI: true
+        )
+        let boundEnterInWindowCount = webView.enterInWindowCount
+        let boundEndDeferringCount = webView.endDeferringViewInWindowChangesCount
+        let boundSetNeedsDisplayCount = webView.setNeedsDisplayCount
+
+        XCTAssertEqual(
+            boundEnterInWindowCount - initialEnterInWindowCount,
+            1,
+            "Registry bind should own one synchronous WebKit window-entry refresh"
+        )
+        XCTAssertEqual(
+            boundEndDeferringCount - initialEndDeferringCount,
+            1,
+            "Registry bind should own one synchronous deferred-window refresh"
+        )
+
+        await drainFormerPresentationRetryWindow()
+
+        XCTAssertEqual(webView.enterInWindowCount, boundEnterInWindowCount)
+        XCTAssertEqual(webView.endDeferringViewInWindowChangesCount, boundEndDeferringCount)
+        XCTAssertGreaterThan(boundSetNeedsDisplayCount, initialSetNeedsDisplayCount)
+        XCTAssertEqual(
+            webView.setNeedsDisplayCount,
+            boundSetNeedsDisplayCount,
+            "Registry bind must not enqueue a delayed presentation invalidation"
+        )
+    }
+
+    func testRegistrySameAnchorRebindForcesOneSynchronousPresentationRefresh() async {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 320),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        realizeWindowLayout(window)
+
+        guard let contentView = window.contentView else {
+            XCTFail("Expected content view")
+            return
+        }
+        let anchor = NSView(frame: NSRect(x: 40, y: 24, width: 220, height: 160))
+        contentView.addSubview(anchor)
+        let webView = TrackingPortalWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        defer {
+            BrowserWindowPortalRegistry.detach(webView: webView)
+            window.orderOut(nil)
+        }
+
+        BrowserWindowPortalRegistry.bind(
+            webView: webView,
+            to: anchor,
+            visibleInUI: true
+        )
+        await waitForNextMainTurn()
+        let viewDidUnhideCountBeforeRebind = webView.viewDidUnhideCount
+        let enterInWindowCountBeforeRebind = webView.enterInWindowCount
+        let endDeferringCountBeforeRebind = webView.endDeferringViewInWindowChangesCount
+        let setNeedsDisplayCountBeforeRebind = webView.setNeedsDisplayCount
+
+        BrowserWindowPortalRegistry.bind(
+            webView: webView,
+            to: anchor,
+            visibleInUI: true,
+            forcePresentationRefresh: true
+        )
+        let viewDidUnhideCountAfterRebind = webView.viewDidUnhideCount
+        let enterInWindowCountAfterRebind = webView.enterInWindowCount
+        let endDeferringCountAfterRebind = webView.endDeferringViewInWindowChangesCount
+        let setNeedsDisplayCountAfterRebind = webView.setNeedsDisplayCount
+
+        XCTAssertEqual(
+            viewDidUnhideCountAfterRebind - viewDidUnhideCountBeforeRebind,
+            1,
+            "Same-anchor host replacement should invoke one synchronous AppKit unhide refresh"
+        )
+        XCTAssertEqual(
+            enterInWindowCountAfterRebind - enterInWindowCountBeforeRebind,
+            1,
+            "Same-anchor host replacement should invoke one synchronous WebKit window-entry refresh"
+        )
+        XCTAssertEqual(
+            endDeferringCountAfterRebind - endDeferringCountBeforeRebind,
+            1,
+            "Same-anchor host replacement should invoke one synchronous deferred-window refresh"
+        )
+
+        await drainFormerPresentationRetryWindow()
+        XCTAssertEqual(webView.viewDidUnhideCount, viewDidUnhideCountAfterRebind)
+
+        XCTAssertEqual(webView.enterInWindowCount, enterInWindowCountAfterRebind)
+        XCTAssertEqual(webView.endDeferringViewInWindowChangesCount, endDeferringCountAfterRebind)
+        XCTAssertGreaterThan(setNeedsDisplayCountAfterRebind, setNeedsDisplayCountBeforeRebind)
+        XCTAssertEqual(
+            webView.setNeedsDisplayCount,
+            setNeedsDisplayCountAfterRebind,
+            "Same-anchor rebind must not enqueue a delayed presentation invalidation"
+        )
+    }
+
+    func testVisiblePortalEntryHidesWithoutDetachingDuringTransientAnchorRemovalUntilRebind() async {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 500, height: 320),
             styleMask: [.titled, .closable],
@@ -4015,7 +4578,9 @@ final class BrowserWindowPortalLifecycleTests: XCTestCase {
 
         anchor1.removeFromSuperview()
         portal.synchronizeWebViewForAnchor(anchor1)
-        advanceAnimations()
+        for _ in 0..<16 {
+            await waitForNextMainTurn()
+        }
 
         XCTAssertTrue(webView.superview === slot, "Visible browser entries should not detach during transient anchor removal")
         XCTAssertTrue(
@@ -4025,23 +4590,58 @@ final class BrowserWindowPortalLifecycleTests: XCTestCase {
         XCTAssertEqual(portal.debugEntryCount(), 1)
 
         let displayCountBeforeRebind = webView.displayIfNeededCount
+        let redrawCountBeforeRebind = webView.setNeedsDisplayCount
+        let enterInWindowCountBeforeRebind = webView.enterInWindowCount
+        let endDeferringCountBeforeRebind = webView.endDeferringViewInWindowChangesCount
         let anchor2 = NSView(frame: anchorFrame)
         contentView.addSubview(anchor2)
         portal.bind(webView: webView, to: anchor2, visibleInUI: true)
-        portal.synchronizeWebViewForAnchor(anchor2)
-        advanceAnimations()
+        let enterInWindowCountAfterRebind = webView.enterInWindowCount
+        let endDeferringCountAfterRebind = webView.endDeferringViewInWindowChangesCount
+        let redrawCountAfterRebind = webView.setNeedsDisplayCount
 
         XCTAssertTrue(webView.superview === slot, "Rebinding after transient anchor removal should reuse the existing portal slot")
         XCTAssertFalse(slot.isHidden)
         XCTAssertEqual(portal.debugEntryCount(), 1)
         XCTAssertGreaterThan(
+            webView.setNeedsDisplayCount,
+            redrawCountBeforeRebind,
+            "Anchor rebind should invalidate hosted browser presentation even when geometry is unchanged"
+        )
+        XCTAssertEqual(
             webView.displayIfNeededCount,
             displayCountBeforeRebind,
-            "Anchor rebinds should refresh hosted browser presentation even when geometry is unchanged"
+            "Anchor rebind must not synchronously flush WebKit display"
+        )
+        XCTAssertEqual(
+            enterInWindowCountAfterRebind - enterInWindowCountBeforeRebind,
+            1,
+            "Anchor rebind should invoke one synchronous WebKit window-entry refresh"
+        )
+        XCTAssertEqual(
+            endDeferringCountAfterRebind - endDeferringCountBeforeRebind,
+            1,
+            "Anchor rebind should invoke one synchronous deferred-window refresh"
+        )
+
+        // AppKit queues one ordinary display invalidation when the hidden slot is
+        // reattached. Let that framework-owned turn settle before checking that
+        // the portal did not enqueue its former delayed presentation retry.
+        await waitForNextMainTurn()
+        let settledRedrawCountAfterRebind = webView.setNeedsDisplayCount
+
+        await drainFormerPresentationRetryWindow()
+
+        XCTAssertEqual(webView.enterInWindowCount, enterInWindowCountAfterRebind)
+        XCTAssertEqual(webView.endDeferringViewInWindowChangesCount, endDeferringCountAfterRebind)
+        XCTAssertEqual(
+            webView.setNeedsDisplayCount,
+            settledRedrawCountAfterRebind,
+            "Anchor rebind must not enqueue a delayed presentation invalidation"
         )
     }
 
-    func testVisiblePortalEntryStaysVisibleDuringOffWindowAnchorReparentUntilRebind() {
+    func testVisiblePortalEntryStaysVisibleDuringOffWindowAnchorReparentUntilRebind() async {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 500, height: 320),
             styleMask: [.titled, .closable],
@@ -4075,7 +4675,9 @@ final class BrowserWindowPortalLifecycleTests: XCTestCase {
         anchor.removeFromSuperview()
         offWindowContainer.addSubview(anchor)
         portal.synchronizeWebViewForAnchor(anchor)
-        advanceAnimations()
+        for _ in 0..<16 {
+            await waitForNextMainTurn()
+        }
 
         XCTAssertTrue(
             webView.superview === slot,
@@ -4209,7 +4811,7 @@ final class BrowserWindowPortalLifecycleTests: XCTestCase {
         XCTAssertTrue(slot.isHidden, "Hiding should immediately hide the existing portal slot")
     }
 
-    func testHiddenPortalEntrySurvivesAnchorRemovalUntilWorkspaceRebind() {
+    func testHiddenPortalEntrySurvivesAnchorRemovalUntilWorkspaceRebind() async {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 500, height: 320),
             styleMask: [.titled, .closable],
@@ -4256,11 +4858,15 @@ final class BrowserWindowPortalLifecycleTests: XCTestCase {
         XCTAssertEqual(portal.debugEntryCount(), 1, "Workspace handoff should keep the hidden browser portal entry alive")
 
         let displayCountBeforeRebind = webView.displayIfNeededCount
+        let redrawCountBeforeRebind = webView.setNeedsDisplayCount
+        let enterInWindowCountBeforeRebind = webView.enterInWindowCount
+        let endDeferringCountBeforeRebind = webView.endDeferringViewInWindowChangesCount
         let newAnchor = NSView(frame: anchorFrame)
         contentView.addSubview(newAnchor)
         portal.bind(webView: webView, to: newAnchor, visibleInUI: true)
-        portal.synchronizeWebViewForAnchor(newAnchor)
-        advanceAnimations()
+        let enterInWindowCountAfterRebind = webView.enterInWindowCount
+        let endDeferringCountAfterRebind = webView.endDeferringViewInWindowChangesCount
+        let redrawCountAfterRebind = webView.setNeedsDisplayCount
 
         XCTAssertTrue(
             webView.superview === slot,
@@ -4269,9 +4875,34 @@ final class BrowserWindowPortalLifecycleTests: XCTestCase {
         XCTAssertFalse(slot.isHidden, "Rebinding the workspace browser should reveal the existing portal slot")
         XCTAssertEqual(portal.debugEntryCount(), 1)
         XCTAssertGreaterThan(
+            webView.setNeedsDisplayCount,
+            redrawCountBeforeRebind,
+            "Workspace rebind should invalidate the preserved browser for redraw"
+        )
+        XCTAssertEqual(
+            enterInWindowCountAfterRebind - enterInWindowCountBeforeRebind,
+            1,
+            "Workspace rebind should invoke one synchronous WebKit window-entry refresh"
+        )
+        XCTAssertEqual(
+            endDeferringCountAfterRebind - endDeferringCountBeforeRebind,
+            1,
+            "Workspace rebind should invoke one synchronous deferred-window refresh"
+        )
+        XCTAssertEqual(
             webView.displayIfNeededCount,
             displayCountBeforeRebind,
-            "Workspace rebind should refresh the preserved browser without recreating its portal slot"
+            "Workspace rebind must not synchronously flush WebKit display"
+        )
+
+        await drainFormerPresentationRetryWindow()
+
+        XCTAssertEqual(webView.enterInWindowCount, enterInWindowCountAfterRebind)
+        XCTAssertEqual(webView.endDeferringViewInWindowChangesCount, endDeferringCountAfterRebind)
+        XCTAssertEqual(
+            webView.setNeedsDisplayCount,
+            redrawCountAfterRebind,
+            "Workspace rebind must not enqueue a delayed presentation invalidation"
         )
     }
 }

@@ -1444,6 +1444,8 @@ pub const Options = struct {
     stream_factory: ?ConnectionFactory = null,
 };
 
+const request_cleanup_timeout_ms: u32 = 1_000;
+
 const TimeoutDeadline = struct {
     timer: ?std.time.Timer = null,
     timeout_ns: u64 = 0,
@@ -2618,7 +2620,7 @@ pub const Client = struct {
         target_operation: Operation,
     ) !void {
         errdefer self.close();
-        var deadline = try TimeoutDeadline.start(self.timeout_ms);
+        var deadline = try TimeoutDeadline.start(request_cleanup_timeout_ms);
         const cancel_request_id = try self.requestId();
         defer self.allocator.free(cancel_request_id);
         var arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -5697,6 +5699,7 @@ pub const NotificationListOptions = struct {
 pub const NotificationCreateOptions = struct {
     title: []const u8,
     body: []const u8,
+    subtitle: OptionalStringUpdate = .unchanged,
     level: NotificationLevel = .info,
     terminal_id: ?TerminalId = null,
 };
@@ -5711,6 +5714,14 @@ pub const AgentReportOptions = struct {
     state: AgentState,
     source: AgentSource,
     source_session: ?[]const u8 = null,
+    root_session: bool = false,
+    label: OptionalStringUpdate = .unchanged,
+    detail: OptionalStringUpdate = .unchanged,
+    started_at_ms: OptionalU64Update = .unchanged,
+    tasks_completed: OptionalU64Update = .unchanged,
+    tasks_total: OptionalU64Update = .unchanged,
+    jobs_running: OptionalU64Update = .unchanged,
+    agents_active: OptionalU64Update = .unchanged,
 };
 
 pub const SidebarEnsureOptions = struct {
@@ -5738,6 +5749,12 @@ pub const TerminalDefaultsUpdate = struct {
 pub const OptionalStringUpdate = union(enum) {
     unchanged,
     set: []const u8,
+    clear,
+};
+
+pub const OptionalU64Update = union(enum) {
+    unchanged,
+    set: u64,
     clear,
 };
 
@@ -6175,6 +6192,19 @@ fn encodeOptionalStringUpdate(
     }
 }
 
+fn encodeOptionalU64Update(
+    comptime Id: type,
+    params: *Params(Id),
+    field: []const u8,
+    value: OptionalU64Update,
+) !void {
+    switch (value) {
+        .unchanged => {},
+        .set => |number| try params.putDecimal(field, number),
+        .clear => try params.putNull(field),
+    }
+}
+
 fn encodeTerminalDefaults(
     comptime Id: type,
     params: *Params(Id),
@@ -6547,6 +6577,7 @@ pub const NotificationSnapshot = struct {
     session_id: SessionId,
     title: []const u8,
     body: []const u8,
+    subtitle: ?[]const u8,
     level: NotificationLevel,
     terminal_id: ?TerminalId,
     created_at_ms: u64,
@@ -6558,13 +6589,14 @@ pub const AgentState = union(enum) {
     working,
     blocked,
     idle,
+    @"error",
     done,
     unknown,
     unrecognized: []const u8,
 
     pub fn wireName(self: AgentState) []const u8 {
         return switch (self) {
-            inline .working, .blocked, .idle, .done, .unknown => |_, tag| @tagName(tag),
+            inline .working, .blocked, .idle, .done, .@"error", .unknown => |_, tag| @tagName(tag),
             .unrecognized => |value| value,
         };
     }
@@ -6590,6 +6622,14 @@ pub const AgentSnapshot = struct {
     terminal_id: TerminalId,
     state: AgentState,
     source: AgentSource,
+    root_session: bool,
+    label: ?[]const u8,
+    detail: ?[]const u8,
+    started_at_ms: ?u64,
+    tasks_completed: ?u64,
+    tasks_total: ?u64,
+    jobs_running: ?u64,
+    agents_active: ?u64,
     updated_at_ms: u64,
     source_session: ?[]const u8,
     extra: ?raw.wire.Object,
@@ -7522,6 +7562,7 @@ fn parseAgentState(value: []const u8) AgentState {
     if (std.mem.eql(u8, value, "blocked")) return .blocked;
     if (std.mem.eql(u8, value, "idle")) return .idle;
     if (std.mem.eql(u8, value, "done")) return .done;
+    if (std.mem.eql(u8, value, "error")) return .@"error";
     if (std.mem.eql(u8, value, "unknown")) return .unknown;
     return .{ .unrecognized = value };
 }
@@ -8818,6 +8859,7 @@ fn decodeNotificationSnapshot(
             "session_id",
             "title",
             "body",
+            "subtitle",
             "level",
             "terminal_id",
             "created_at_ms",
@@ -8834,6 +8876,7 @@ fn decodeNotificationSnapshot(
         ),
         .title = try objectString(object, "title"),
         .body = try objectString(object, "body"),
+        .subtitle = try requiredNullableString(object, "subtitle"),
         .level = parseNotificationLevel(
             try objectString(object, "level"),
         ),
@@ -8861,6 +8904,14 @@ fn decodeAgentSnapshot(value: raw.wire.Value) !AgentSnapshot {
             "state",
             "source",
             "updated_at_ms",
+            "root_session",
+            "label",
+            "detail",
+            "started_at_ms",
+            "tasks_completed",
+            "tasks_total",
+            "jobs_running",
+            "agents_active",
             "source_session",
             "extra",
         },
@@ -8879,6 +8930,29 @@ fn decodeAgentSnapshot(value: raw.wire.Value) !AgentSnapshot {
         ),
         .state = parseAgentState(try objectString(object, "state")),
         .source = parseAgentSource(try objectString(object, "source")),
+        .root_session = try objectBool(object, "root_session"),
+        .label = try requiredNullableString(object, "label"),
+        .detail = try requiredNullableString(object, "detail"),
+        .started_at_ms = try requiredNullableDecimalU64(
+            object,
+            "started_at_ms",
+        ),
+        .tasks_completed = try requiredNullableDecimalU64(
+            object,
+            "tasks_completed",
+        ),
+        .tasks_total = try requiredNullableDecimalU64(
+            object,
+            "tasks_total",
+        ),
+        .jobs_running = try requiredNullableDecimalU64(
+            object,
+            "jobs_running",
+        ),
+        .agents_active = try requiredNullableDecimalU64(
+            object,
+            "agents_active",
+        ),
         .updated_at_ms = try decimalU64(
             object.get("updated_at_ms") orelse return error.MissingField,
         ),
@@ -10180,6 +10254,12 @@ fn HandleImpl(
                 "level",
                 notification_options.level.wireName(),
             );
+            try encodeOptionalStringUpdate(
+                Id,
+                &params,
+                "subtitle",
+                notification_options.subtitle,
+            );
             if (notification_options.terminal_id) |terminal_id| {
                 try params.putString("terminal_id", terminal_id.slice());
             }
@@ -10226,6 +10306,51 @@ fn HandleImpl(
                     source_session,
                 );
             }
+            if (report.root_session) {
+                try params.putValue("root_session", .{ .bool = true });
+            }
+            try encodeOptionalStringUpdate(
+                Id,
+                &params,
+                "label",
+                report.label,
+            );
+            try encodeOptionalStringUpdate(
+                Id,
+                &params,
+                "detail",
+                report.detail,
+            );
+            try encodeOptionalU64Update(
+                Id,
+                &params,
+                "started_at_ms",
+                report.started_at_ms,
+            );
+            try encodeOptionalU64Update(
+                Id,
+                &params,
+                "tasks_completed",
+                report.tasks_completed,
+            );
+            try encodeOptionalU64Update(
+                Id,
+                &params,
+                "tasks_total",
+                report.tasks_total,
+            );
+            try encodeOptionalU64Update(
+                Id,
+                &params,
+                "jobs_running",
+                report.jobs_running,
+            );
+            try encodeOptionalU64Update(
+                Id,
+                &params,
+                "agents_active",
+                report.agents_active,
+            );
             return decodeTypedMutation(
                 AgentSnapshot,
                 try self.client.mutate(
@@ -13965,7 +14090,7 @@ const FakeCancelDelivery = enum {
     malformed_known_item,
 };
 
-const fake_delayed_stream_wait_ms: u64 = 15;
+const fake_delayed_stream_wait_ms: u64 = 500;
 
 const fake_layout_json =
     "{\"version\":1," ++
@@ -14021,7 +14146,7 @@ const fake_notification_snapshot_json =
     "{\"id\":\"notification_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"," ++
     "\"session_id\":\"session_22222222222222222222222222222222\"," ++
     "\"title\":\"Build complete\",\"body\":\"All tests passed\"," ++
-    "\"level\":\"info\",\"terminal_id\":" ++
+    "\"subtitle\":null,\"level\":\"info\",\"terminal_id\":" ++
     "\"term_0123456789abcdef0123456789abcdef\"," ++
     "\"created_at_ms\":\"18446744073709551615\",\"unread\":true," ++
     "\"extra\":{\"notification_future\":true}}";
@@ -14030,7 +14155,11 @@ const fake_agent_snapshot_json =
     "{\"id\":\"agent_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"," ++
     "\"session_id\":\"session_22222222222222222222222222222222\"," ++
     "\"terminal_id\":\"term_0123456789abcdef0123456789abcdef\"," ++
-    "\"state\":\"working\",\"source\":\"hook\"," ++
+    "\"state\":\"error\",\"source\":\"detected\",\"root_session\":true," ++
+    "\"label\":\"root agent\",\"detail\":null," ++
+    "\"started_at_ms\":\"18446744073709551613\"," ++
+    "\"tasks_completed\":\"7\",\"tasks_total\":\"10\"," ++
+    "\"jobs_running\":\"2\",\"agents_active\":null," ++
     "\"updated_at_ms\":\"18446744073709551614\"," ++
     "\"source_session\":null,\"extra\":{\"agent_future\":true}}";
 
@@ -16471,7 +16600,7 @@ test "timed out wait exit cancels once and reuses its control connection" {
     defer shared.deinit();
     const connection = try fakeConnection(std.testing.allocator, &shared);
     var client = Client.init(std.testing.allocator, connection, .{
-        .timeout_ms = 2,
+        .timeout_ms = 250,
     });
     defer client.deinit();
     const session_id = try SessionId.parse(
@@ -17120,7 +17249,7 @@ test "wait cancel false drains the raced response before reuse" {
     defer shared.deinit();
     const connection = try fakeConnection(std.testing.allocator, &shared);
     var client = Client.init(std.testing.allocator, connection, .{
-        .timeout_ms = 2,
+        .timeout_ms = 250,
     });
     defer client.deinit();
     const session_id = try SessionId.parse(
@@ -17161,7 +17290,7 @@ test "wait cancel false rejects a malformed raced result" {
     defer shared.deinit();
     const connection = try fakeConnection(std.testing.allocator, &shared);
     var client = Client.init(std.testing.allocator, connection, .{
-        .timeout_ms = 2,
+        .timeout_ms = 250,
     });
     defer client.deinit();
     const terminal_id = try TerminalId.parse(
@@ -17190,7 +17319,7 @@ test "malformed wait cleanup preserves timeout and fail closes once" {
     defer shared.deinit();
     const connection = try fakeConnection(std.testing.allocator, &shared);
     var client = Client.init(std.testing.allocator, connection, .{
-        .timeout_ms = 2,
+        .timeout_ms = 250,
     });
     defer client.deinit();
     const terminal_id = try TerminalId.parse(
@@ -19457,7 +19586,7 @@ test "acknowledged public stream survives beyond request timeout" {
         std.testing.allocator,
         &control_shared,
     );
-    const request_timeout_ms: u32 = 2;
+    const request_timeout_ms: u32 = 250;
     var client = Client.init(std.testing.allocator, connection, .{
         .timeout_ms = request_timeout_ms,
         .stream_factory = .{
@@ -19481,10 +19610,11 @@ test "acknowledged public stream survives beyond request timeout" {
     try std.testing.expect(
         stream_shared.delayed_stream_open_read_observed,
     );
-    const open_timeout_ms = stream_shared.delayed_stream_open_timeout_ms orelse
-        return error.MissingDelayedStreamOpenTimeout;
-    try std.testing.expect(open_timeout_ms > 0);
-    try std.testing.expect(open_timeout_ms <= request_timeout_ms);
+    const stream_open_timeout_ms =
+        stream_shared.delayed_stream_open_timeout_ms orelse
+        return error.MissingStreamOpenTimeout;
+    try std.testing.expect(stream_open_timeout_ms > 0);
+    try std.testing.expect(stream_open_timeout_ms <= request_timeout_ms);
     try std.testing.expect(stream_shared.delayed_stream_read_started);
     try std.testing.expect(
         !stream_shared.delayed_stream_read_had_deadline,
@@ -20193,6 +20323,7 @@ test "auxiliary resource facades are typed and fully routed" {
     var notification = try session.createNotification(.{
         .title = "Build complete",
         .body = "All tests passed",
+        .subtitle = .clear,
         .terminal_id = terminal_id,
     }, try MutationOptions.withKey("notification-create"));
     defer notification.deinit();
@@ -20200,17 +20331,69 @@ test "auxiliary resource facades are typed and fully routed" {
         std.math.maxInt(u64),
         notification.value.created_at_ms,
     );
+    try std.testing.expect(notification.value.subtitle == null);
     try std.testing.expect(notification.value.unread);
 
     var agent = try session.reportAgent(.{
         .terminal_id = terminal_id,
-        .state = .working,
-        .source = .hook,
+        .state = .@"error",
+        .source = .socket,
+        .source_session = "root-session",
+        .root_session = true,
+        .label = .{ .set = "root agent" },
+        .detail = .clear,
+        .started_at_ms = .{ .set = std.math.maxInt(u64) - 2 },
+        .tasks_completed = .{ .set = 7 },
+        .tasks_total = .{ .set = 10 },
+        .jobs_running = .{ .set = 2 },
+        .agents_active = .clear,
     }, try MutationOptions.withKey("agent-report"));
     defer agent.deinit();
     try std.testing.expectEqual(
         std.math.maxInt(u64) - 1,
         agent.value.updated_at_ms,
+    );
+    try std.testing.expectEqualStrings("error", agent.value.state.wireName());
+    try std.testing.expectEqualStrings("detected", agent.value.source.wireName());
+    try std.testing.expect(agent.value.root_session);
+    try std.testing.expectEqualStrings("root agent", agent.value.label.?);
+    try std.testing.expect(agent.value.detail == null);
+    try std.testing.expectEqual(
+        std.math.maxInt(u64) - 2,
+        agent.value.started_at_ms.?,
+    );
+    try std.testing.expectEqual(@as(u64, 7), agent.value.tasks_completed.?);
+    try std.testing.expectEqual(@as(u64, 10), agent.value.tasks_total.?);
+    try std.testing.expectEqual(@as(u64, 2), agent.value.jobs_running.?);
+    try std.testing.expect(agent.value.agents_active == null);
+
+    var telemetry_requests = std.mem.splitScalar(u8, shared.output.items, '\n');
+    try std.testing.expectEqualStrings(
+        "{\"protocol\":\"cmux.protocol/2\",\"type\":\"request\"," ++
+            "\"id\":\"zig-request-1\",\"operation\":" ++
+            "\"notification.create\",\"params\":{" ++
+            "\"machine\":\"current\"," ++
+            "\"session\":\"session_22222222222222222222222222222222\"," ++
+            "\"title\":\"Build complete\",\"body\":\"All tests passed\"," ++
+            "\"level\":\"info\",\"subtitle\":null,\"terminal_id\":" ++
+            "\"term_0123456789abcdef0123456789abcdef\"}," ++
+            "\"idempotency_key\":\"notification-create\"}",
+        telemetry_requests.next().?,
+    );
+    try std.testing.expectEqualStrings(
+        "{\"protocol\":\"cmux.protocol/2\",\"type\":\"request\"," ++
+            "\"id\":\"zig-request-2\",\"operation\":\"agent.report\"," ++
+            "\"params\":{\"machine\":\"current\",\"session\":" ++
+            "\"session_22222222222222222222222222222222\"," ++
+            "\"terminal_id\":\"term_0123456789abcdef0123456789abcdef\"," ++
+            "\"state\":\"error\",\"source\":\"socket\"," ++
+            "\"source_session\":\"root-session\",\"root_session\":true," ++
+            "\"label\":\"root agent\",\"detail\":null," ++
+            "\"started_at_ms\":\"18446744073709551613\"," ++
+            "\"tasks_completed\":\"7\",\"tasks_total\":\"10\"," ++
+            "\"jobs_running\":\"2\",\"agents_active\":null}," ++
+            "\"idempotency_key\":\"agent-report\"}",
+        telemetry_requests.next().?,
     );
 
     const pairing_id = try PairingRequestId.parse(

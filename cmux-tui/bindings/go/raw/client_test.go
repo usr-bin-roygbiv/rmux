@@ -51,8 +51,8 @@ func TestGeneratedInventoryHasTypedMethodForEveryCommand(t *testing.T) {
 			t.Errorf("generated command inventory is missing %s", name)
 		}
 	}
-	if events := AllEventMetadata(); len(events) != 46 {
-		t.Fatalf("generated events = %d, want 46", len(events))
+	if events := AllEventMetadata(); len(events) != 47 {
+		t.Fatalf("generated events = %d, want 47", len(events))
 	}
 }
 

@@ -859,6 +859,7 @@ struct NotificationCreateOptions {
 
     std::string title;
     std::string body;
+    std::optional<std::optional<std::string>> subtitle;
     std::optional<NotificationLevel> level;
     std::optional<TerminalId> terminal_id;
 
@@ -869,6 +870,7 @@ struct NotificationSnapshot {
     NotificationId id;
     SessionId session_id;
     std::string title;
+    std::optional<std::string> subtitle;
     std::string body;
     NotificationLevel level = NotificationLevel::info;
     std::optional<TerminalId> terminal_id;
@@ -882,6 +884,7 @@ enum class AgentState {
     blocked,
     idle,
     done,
+    error,
     unknown,
 };
 
@@ -909,6 +912,14 @@ struct AgentReportOptions {
     AgentState state;
     AgentReportSource source;
     std::optional<std::string> source_session;
+    bool root_session = false;
+    std::optional<std::string> label;
+    std::optional<std::string> detail;
+    std::optional<std::uint64_t> started_at_ms;
+    std::optional<std::uint64_t> tasks_completed;
+    std::optional<std::uint64_t> tasks_total;
+    std::optional<std::uint64_t> jobs_running;
+    std::optional<std::uint64_t> agents_active;
 
     [[nodiscard]] Result<Json::Object> to_params() const;
 };
@@ -921,6 +932,14 @@ struct AgentSnapshot {
     AgentSource source = AgentSource::detected;
     std::uint64_t updated_at_ms = 0;
     std::optional<std::string> source_session;
+    bool root_session = false;
+    std::optional<std::string> label;
+    std::optional<std::string> detail;
+    std::optional<std::uint64_t> started_at_ms;
+    std::optional<std::uint64_t> tasks_completed;
+    std::optional<std::uint64_t> tasks_total;
+    std::optional<std::uint64_t> jobs_running;
+    std::optional<std::uint64_t> agents_active;
     Json::Object extra;
 };
 

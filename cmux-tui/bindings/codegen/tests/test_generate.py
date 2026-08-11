@@ -135,7 +135,7 @@ class GenerateTests(unittest.TestCase):
                 )
             self.assertFalse((root / "bindings" / "go").exists())
 
-    def test_live_v10_raw_commands_and_types_emit_for_all_languages(self) -> None:
+    def test_live_v12_raw_commands_and_types_emit_for_all_languages(self) -> None:
         markers = {
             "cpp": (
                 "Client::clear_history(",
@@ -184,6 +184,7 @@ class GenerateTests(unittest.TestCase):
                 "export interface UndoLayoutRequest",
                 "export type TerminalKey =",
                 "export type LayoutUndoResult =",
+                "Every event emitted by protocol v12.",
             ),
             "zig": (
                 "pub fn clearHistory(",

@@ -29,7 +29,7 @@ public final class ResourceApiTest {
         exactCommandAndRouting();
         creationCorrelationIsFirstClass();
         nullableMetadata();
-        notificationTargetingIsOptionalAndTyped();
+        notificationAndAgentTelemetryAreTyped();
         strictTypedModels();
         layoutUndoUsesTypedConfirmation();
         creationResolutionAndWaitExitStaySeparate();
@@ -254,7 +254,7 @@ public final class ResourceApiTest {
         }
     }
 
-    private static void notificationTargetingIsOptionalAndTyped() {
+    private static void notificationAndAgentTelemetryAreTyped() {
         FakeTransport transport = new FakeTransport();
         try (Client client = client(transport)) {
             Session session = client.machine(Selector.current())
@@ -282,7 +282,8 @@ public final class ResourceApiTest {
                     "Task failed",
                     "The selected terminal exited",
                     Optional.of("error"),
-                    Optional.of(terminalId)
+                    Optional.of(terminalId),
+                    Options.NullableString.nullValue()
                 ));
             Map<String, Object> terminalParams = object(
                 transport.lastSent().get("params")
@@ -292,9 +293,73 @@ public final class ResourceApiTest {
                 "terminal-targeted notification serializes terminal_id"
             );
             require(
+                terminalParams.containsKey("subtitle") &&
+                    terminalParams.get("subtitle") == null,
+                "notification serializes an explicit null subtitle"
+            );
+            require(
                 targeted.value().snapshot().terminalId()
-                    .equals(Optional.of(terminalId)),
-                "terminal-targeted notification decodes terminal_id"
+                    .equals(Optional.of(terminalId)) &&
+                    targeted.value().snapshot().subtitle().isEmpty(),
+                "notification decodes terminal_id and nullable subtitle"
+            );
+
+            MutationResult<Agent> reported = session.reportAgent(
+                new Options.AgentReport(
+                    Options.Mutation.defaults(),
+                    terminalId,
+                    Options.AgentState.ERROR,
+                    Options.AgentSource.HOOK,
+                    Optional.of("source-session"),
+                    Optional.of(true),
+                    Options.NullableString.of("root agent"),
+                    Options.NullableString.nullValue(),
+                    Options.NullableDecimal.of(Decimal.parse("100")),
+                    Options.NullableDecimal.of(Decimal.parse("2")),
+                    Options.NullableDecimal.of(Decimal.parse("5")),
+                    Options.NullableDecimal.of(Decimal.parse("3")),
+                    Options.NullableDecimal.of(Decimal.parse("4"))
+                )
+            );
+            Map<String, Object> agentParams = object(
+                transport.lastSent().get("params")
+            );
+            require(
+                agentParams.get("state").equals("error") &&
+                    agentParams.get("source").equals("hook") &&
+                    agentParams.get("root_session").equals(true) &&
+                    agentParams.get("label").equals("root agent") &&
+                    agentParams.containsKey("detail") &&
+                    agentParams.get("detail") == null &&
+                    agentParams.get("started_at_ms").equals("100") &&
+                    agentParams.get("tasks_completed").equals("2") &&
+                    agentParams.get("tasks_total").equals("5") &&
+                    agentParams.get("jobs_running").equals("3") &&
+                    agentParams.get("agents_active").equals("4"),
+                "agent report serializes all protocol telemetry"
+            );
+            Snapshots.AgentSnapshot agent = reported.value().snapshot();
+            require(
+                agent.state().equals("error") &&
+                    agent.rootSession() &&
+                    agent.label().equals(Optional.of("root agent")) &&
+                    agent.detail().isEmpty() &&
+                    agent.startedAtMS().equals(
+                        Optional.of(Decimal.parse("100"))
+                    ) &&
+                    agent.tasksCompleted().equals(
+                        Optional.of(Decimal.parse("2"))
+                    ) &&
+                    agent.tasksTotal().equals(
+                        Optional.of(Decimal.parse("5"))
+                    ) &&
+                    agent.jobsRunning().equals(
+                        Optional.of(Decimal.parse("3"))
+                    ) &&
+                    agent.agentsActive().equals(
+                        Optional.of(Decimal.parse("4"))
+                    ),
+                "agent snapshot strictly decodes all protocol telemetry"
             );
         }
     }
@@ -3404,6 +3469,7 @@ public final class ResourceApiTest {
                 );
                 case "notification.create" ->
                     notificationCreateResult(params);
+                case "agent.report" -> agentReportResult(params);
                 case "session.events" -> Map.of(
                     "stream_id",
                     String.valueOf(params.get("stream_id"))
@@ -3786,6 +3852,7 @@ public final class ResourceApiTest {
             notification.put("session_id", "session_" + HEX);
             notification.put("title", params.get("title"));
             notification.put("body", params.get("body"));
+            notification.put("subtitle", params.get("subtitle"));
             notification.put("level", params.getOrDefault("level", "info"));
             if (params.containsKey("terminal_id")) {
                 notification.put("terminal_id", params.get("terminal_id"));
@@ -3794,6 +3861,33 @@ public final class ResourceApiTest {
             notification.put("unread", true);
             return Map.of(
                 "value", notification,
+                "generation", "generation-1",
+                "revision", "18446744073709551615",
+                "replayed", false
+            );
+        }
+
+        private static Map<String, Object> agentReportResult(
+            Map<String, Object> params
+        ) {
+            Map<String, Object> agent = new LinkedHashMap<>();
+            agent.put("id", "agent_" + HEX);
+            agent.put("session_id", "session_" + HEX);
+            agent.put("terminal_id", params.get("terminal_id"));
+            agent.put("state", params.get("state"));
+            agent.put("source", params.get("source"));
+            agent.put("updated_at_ms", "101");
+            agent.put("source_session", params.get("source_session"));
+            agent.put("root_session", params.getOrDefault("root_session", false));
+            agent.put("label", params.get("label"));
+            agent.put("detail", params.get("detail"));
+            agent.put("started_at_ms", params.get("started_at_ms"));
+            agent.put("tasks_completed", params.get("tasks_completed"));
+            agent.put("tasks_total", params.get("tasks_total"));
+            agent.put("jobs_running", params.get("jobs_running"));
+            agent.put("agents_active", params.get("agents_active"));
+            return Map.of(
+                "value", agent,
                 "generation", "generation-1",
                 "revision", "18446744073709551615",
                 "replayed", false

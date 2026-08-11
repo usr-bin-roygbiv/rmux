@@ -23,7 +23,7 @@ $TMPDIR/cmux-tui-<uid>/<session>.sock
 
 ```json
 {"id":1,"cmd":"identify"}
-{"id":1,"ok":true,"data":{"app":"cmux-tui","version":"...","protocol":12,"capabilities":["attach-initial-size","workspace-registry-v1","daemon-handoff-force-v1","browser-provider-v1","browser-pointer-frame-guard-v1","viewport-splits-v1","viewport-column-resize-v1","layout-undo-v1","clear-history-v1","surface-subscribe-filter","view-attachment-lease-v1","view-attachment-detach-v1","creation-receipts-v1","creation-attempt-keys-v1","creation-selector-fallbacks-v1","provider-managed-workspace-authority-v2","clear-history-key-v1"],"session":"main","pid":12345}}
+{"id":1,"ok":true,"data":{"app":"cmux-tui","version":"...","protocol":12,"capabilities":["attach-initial-size","workspace-registry-v1","daemon-handoff-force-v1","browser-pointer-frame-guard-v1","viewport-splits-v1","viewport-column-resize-v1","layout-undo-v1","clear-history-v1","surface-subscribe-filter","session-journal-v1","frontend-journal-v1","view-attachment-lease-v1","view-attachment-detach-v1","creation-receipts-v1","creation-attempt-keys-v1","creation-selector-fallbacks-v1","provider-managed-workspace-authority-v2","browser-provider-v1","clear-history-key-v1"],"session":"main","pid":12345}}
 ```
 
 Responses have this shape. The second example is a failed `clear-history` request:
@@ -101,14 +101,20 @@ Subscribed event lines are:
 {"event":"surface-output","surface":4}
 {"event":"surface-resized","surface":4,"cols":120,"rows":40,"reservation_id":7}
 {"event":"surface-resize-failed","surface":4,"cols":120,"rows":40,"error":"browser is not responding","retry_after_ms":250,"reservation_id":7}
-{"event":"surface-exited","surface":4}
+{"event":"surface-exited","surface":4,"runtime_ms":1234}
 {"event":"title-changed","surface":4,"title":"build logs"}
 {"event":"bell","surface":4}
 {"event":"tree-changed"}
 {"event":"empty"}
 ```
 
+Protocol v12 adds `agent-state-changed` events carrying `root_session` plus the same optional telemetry returned by `list-agents`: `label`, `detail`, `started_at_ms`, `tasks_completed`, `tasks_total`, `jobs_running`, and `agents_active`. `root_session: true` structurally identifies one authoritative root agent for workspace aggregation; labels and embedded subagent totals do not create roots. Agent states are `working`, `blocked`, `idle`, `done`, `error`, and `unknown`. Notification events add an optional `subtitle`; omitted subtitles preserve the existing title/body presentation.
+
+Every child PTY retains `CMUX_TUI_SOCKET` and `CMUX_MUX_SOCKET` and receives numeric `CMUX_TUI_SURFACE_ID` and `CMUX_TUI_WORKSPACE_ID`. These ids route agent reports back to the owning TUI surface and workspace.
+
 `surface-resized` reports the final clamped cell size and is emitted only when the surface size actually changes. `surface-resize-failed` reports an asynchronous browser resize failure and the delay before an automatic retry, or `null` after retries are exhausted. Browser resize completions repeat the numeric `reservation_id` returned by the accepted request so clients can ignore stale completions.
+
+`surface-exited.runtime_ms` is the hosted child process runtime in milliseconds. It is `null` for browser and non-hosted surfaces and may be absent when connected to an older server. Frontends can compare it with Ghostty's `abnormal-command-exit-runtime` setting to close established shells while retaining startup failures.
 
 Protocol v7 and newer `title-changed` events carry the authoritative current `title`. Slow subscribers coalesce repeated pending title changes per surface to the latest value.
 
@@ -153,9 +159,9 @@ When the stream ends, it sends:
 
 ## Client Compatibility
 
-The remote TUI requires protocol v12. It rejects protocol-v11 servers because v12 adds lifecycle readiness to the strict identify response. Protocol v11 changed terminal placement nullability, terminal identity nullability, lifecycle typing, typed terminal exit records, and renderer minting responses. Protocol-v12 servers without `browser-pointer-frame-guard-v1` remain compatible for PTY surfaces, but the remote TUI rejects browser attachment because it cannot route browser pointer input safely. Every bundled client that opens a long-lived `attach-surface` socket sends `set-client-info` with `browser-pointer-frame-guard-v1` on that same connection before attaching a browser surface, because capability state and guarded-client pointer captures are scoped to the connection. Legacy one-shot pointer commands retain owner zero so a down/move/up sequence can remain compatible across short-lived sockets.
+The remote TUI requires protocol v12. It rejects protocol-v11 servers because v12 adds lifecycle readiness and agent telemetry to the strict identify response. Protocol v11 changed terminal placement nullability, terminal identity nullability, lifecycle typing, typed terminal exit records, renderer minting responses, and viewport/layout behavior. Protocol-v12 servers without `browser-pointer-frame-guard-v1` remain compatible for PTY surfaces, but the remote TUI rejects browser attachment because it cannot route browser pointer input safely. Every bundled client that opens a long-lived `attach-surface` socket sends `set-client-info` with `browser-pointer-frame-guard-v1` on that same connection before attaching a browser surface, because capability state and guarded-client pointer captures are scoped to the connection. Legacy one-shot pointer commands retain owner zero so a down/move/up sequence can remain compatible across short-lived sockets.
 
-Existing `set-ratio` clients remain source-compatible and the server keeps the pane-and-direction command unchanged. Protocol-v8 and newer frontends should read `layout.split` and send `set-split-ratio` so nested same-direction dividers are addressed exactly. Protocol v9 adds stack layout nodes and `new-pane`; clients must not send `new-pane` to a protocol-v8 server. Protocol v10 requires `surface` on every `set-client-sizing` request and moves `size_participating` into each `list-clients.sizes` entry.
+Existing `set-ratio` clients remain source-compatible and the server keeps the pane-and-direction command unchanged. Protocol-v8 and newer frontends should read `layout.split` and send `set-split-ratio`; protocol v9 adds stack layouts and `new-pane`; protocol v10 scopes client sizing per surface; protocol v11 adds viewport/layout capabilities; and protocol v12 adds optional agent telemetry, the `error` agent state, `agent-state-changed`, and notification subtitles. `clear-history` requires protocol v9 or newer plus `clear-history-v1`; its structured fallback key additionally requires `clear-history-key-v1`. Older producers may omit every v12 field.
 
 Attach clients mirror PTY surfaces locally. After `identify` advertises `attach-initial-size`, a client can include paired `cols` and `rows` in `attach-surface`, so the server records its initial size claim before capturing the first VT replay or render state. Older servers that omit the capability must receive neither field. Bundled long-lived clients echo `view-attachment-lease-v1` and `view-attachment-detach-v1` through `set-client-info`; against older servers, they close the transport when a raced attach must be abandoned because transport teardown is the only cleanup fence.
 

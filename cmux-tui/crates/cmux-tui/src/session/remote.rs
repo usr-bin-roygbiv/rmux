@@ -12,13 +12,15 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
+use cmux_tui_core::resource::TerminalPublicId;
 use cmux_tui_core::server::{VIEWPORT_COLUMN_RESIZE_CAPABILITY, VIEWPORT_SPLITS_CAPABILITY};
 use cmux_tui_core::{
-    BrowserFrame, BrowserFrameUpdate, BrowserSource, BrowserStatus, ClearHistoryDelivery,
-    ClearHistoryFailure, DefaultColors, GraphicsStatus, GuardedMouseEncode, MuxEvent,
-    MuxEventBroadcaster, MuxEventReceiver, NotificationEvent, NotificationLevel, PairingChallenge,
-    PointerSemanticProbe, PointerSnapshotProbe, REMOTE_SESSION_MESSAGE_MAX_BYTES, Rgb, SurfaceId,
-    SurfaceKind, TerminalPointerSnapshot,
+    AgentRecord, AgentSource, AgentState, AgentTelemetry, BrowserFrame, BrowserFrameUpdate,
+    BrowserSource, BrowserStatus, ClearHistoryDelivery, ClearHistoryFailure, DefaultColors,
+    GraphicsStatus, GuardedMouseEncode, MuxEvent, MuxEventBroadcaster, MuxEventReceiver,
+    NotificationEvent, NotificationLevel, PairingChallenge, PointerSemanticProbe,
+    PointerSnapshotProbe, REMOTE_SESSION_MESSAGE_MAX_BYTES, Rgb, SurfaceId, SurfaceKind,
+    TerminalPointerSnapshot,
     platform::transport,
     server::{
         CLEAR_HISTORY_CAPABILITY, CLEAR_HISTORY_KEY_CAPABILITY, CREATION_RECEIPTS_CAPABILITY,
@@ -191,6 +193,69 @@ fn require_capability(
     } else {
         anyhow::bail!("remote server does not support {operation}; restart the cmux-tui server")
     }
+}
+
+fn optional_agent_string(value: &Value, field: &str) -> Option<Option<String>> {
+    match value.get(field) {
+        None | Some(Value::Null) => Some(None),
+        Some(Value::String(value)) => Some(Some(value.clone())),
+        Some(_) => None,
+    }
+}
+
+fn optional_agent_u64(value: &Value, field: &str) -> Option<Option<u64>> {
+    match value.get(field) {
+        None | Some(Value::Null) => Some(None),
+        Some(value) => value.as_u64().map(Some),
+    }
+}
+
+fn optional_agent_bool(value: &Value, field: &str) -> Option<Option<bool>> {
+    match value.get(field) {
+        None | Some(Value::Null) => Some(None),
+        Some(value) => value.as_bool().map(Some),
+    }
+}
+
+pub(super) fn parse_agent_record(value: &Value) -> Option<AgentRecord> {
+    let state = match value.get("state")?.as_str()? {
+        "working" => AgentState::Working,
+        "blocked" => AgentState::Blocked,
+        "idle" => AgentState::Idle,
+        "done" => AgentState::Done,
+        "error" => AgentState::Error,
+        "unknown" => AgentState::Unknown,
+        _ => return None,
+    };
+    let source = match value.get("source")?.as_str()? {
+        "detected" => AgentSource::Detected,
+        "hook" => AgentSource::Hook,
+        "socket" => AgentSource::Socket,
+        _ => return None,
+    };
+    let updated_at_ms = match value.get("updated_at_ms") {
+        None => 0,
+        Some(value) => value.as_u64()?,
+    };
+    Some(AgentRecord {
+        surface: value.get("surface")?.as_u64()?,
+        terminal_id: TerminalPublicId::parse(value.get("terminal_id")?.as_str()?.to_string())
+            .ok()?,
+        state,
+        source,
+        session: optional_agent_string(value, "session")?,
+        telemetry: AgentTelemetry {
+            root_session: optional_agent_bool(value, "root_session")?.unwrap_or(false),
+            label: optional_agent_string(value, "label")?,
+            detail: optional_agent_string(value, "detail")?,
+            started_at_ms: optional_agent_u64(value, "started_at_ms")?,
+            tasks_completed: optional_agent_u64(value, "tasks_completed")?,
+            tasks_total: optional_agent_u64(value, "tasks_total")?,
+            jobs_running: optional_agent_u64(value, "jobs_running")?,
+            agents_active: optional_agent_u64(value, "agents_active")?,
+        },
+        updated_at_ms,
+    })
 }
 
 pub(crate) type RemoteResizeReservation = (SurfaceId, (u16, u16), Option<u64>);
@@ -1990,6 +2055,7 @@ impl RemoteSession {
             | "client-detached"
             | "client-list-invalidated" => false,
             "notification" => surface.is_none_or(|surface| surface == target),
+            "agent-state-changed" => surface == Some(target),
             "overflow" if value.get("scope").and_then(Value::as_str) == Some("surface") => {
                 surface == Some(target)
             }
@@ -2299,7 +2365,10 @@ impl RemoteSession {
                     // already fail closed for a known-exited surface.
                     self.drop_surface(id);
                     self.tree_stale.store(true, Ordering::Release);
-                    self.emit(MuxEvent::SurfaceExited(id));
+                    self.emit(MuxEvent::SurfaceExited {
+                        surface: id,
+                        runtime_ms: value.get("runtime_ms").and_then(Value::as_u64),
+                    });
                 }
             }
             Some("title-changed") => {
@@ -2323,6 +2392,20 @@ impl RemoteSession {
                     self.emit(MuxEvent::Bell(id));
                 }
             }
+            Some("agent-state-changed") => {
+                if let Some(record) = parse_agent_record(&value) {
+                    let previous = match value.get("previous").and_then(Value::as_str) {
+                        Some("working") => Some(AgentState::Working),
+                        Some("blocked") => Some(AgentState::Blocked),
+                        Some("idle") => Some(AgentState::Idle),
+                        Some("done") => Some(AgentState::Done),
+                        Some("error") => Some(AgentState::Error),
+                        Some("unknown") => Some(AgentState::Unknown),
+                        _ => None,
+                    };
+                    self.emit(MuxEvent::AgentStateChanged { previous, record });
+                }
+            }
             Some("notification") => {
                 let Some(notification) = value.get("notification").and_then(Value::as_u64) else {
                     return;
@@ -2339,6 +2422,7 @@ impl RemoteSession {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string(),
+                    subtitle: value.get("subtitle").and_then(Value::as_str).map(str::to_string),
                     body: value.get("body").and_then(Value::as_str).unwrap_or_default().to_string(),
                     level,
                     surface: surface_id(),
@@ -4200,8 +4284,8 @@ mod tests {
     }
 
     #[test]
-    fn per_surface_client_sizing_requires_protocol_10() {
-        const { assert!(SUPPORTED_PROTOCOL_VERSION >= 10) };
+    fn agent_telemetry_requires_protocol_12() {
+        assert_eq!(SUPPORTED_PROTOCOL_VERSION, 12);
     }
 
     #[test]
@@ -4254,6 +4338,39 @@ mod tests {
     #[test]
     fn protocol_12_identity_is_accepted() {
         validate_remote_identity(&json!({"app": "cmux-tui", "protocol": 12})).unwrap();
+    }
+
+    #[test]
+    fn protocol_12_agent_records_decode_all_optional_telemetry() {
+        let record = parse_agent_record(&json!({
+            "surface": 41,
+            "terminal_id": "term_00000000000000000000000000000029",
+            "state": "error",
+            "source": "hook",
+            "root_session": true,
+            "session": "session-1",
+            "label": "root",
+            "detail": "reviewing",
+            "started_at_ms": 1700000000000_u64,
+            "tasks_completed": 3,
+            "tasks_total": 5,
+            "jobs_running": 2,
+            "agents_active": 4,
+            "updated_at_ms": 1700000001000_u64
+        }))
+        .unwrap();
+
+        assert_eq!(record.state, AgentState::Error);
+        assert_eq!(record.terminal_id.as_str(), "term_00000000000000000000000000000029");
+        assert_eq!(record.source, AgentSource::Hook);
+        assert!(record.telemetry.root_session);
+        assert_eq!(record.telemetry.label.as_deref(), Some("root"));
+        assert_eq!(record.telemetry.detail.as_deref(), Some("reviewing"));
+        assert_eq!(record.telemetry.started_at_ms, Some(1_700_000_000_000));
+        assert_eq!(record.telemetry.tasks_completed, Some(3));
+        assert_eq!(record.telemetry.tasks_total, Some(5));
+        assert_eq!(record.telemetry.jobs_running, Some(2));
+        assert_eq!(record.telemetry.agents_active, Some(4));
     }
 
     #[test]
@@ -6734,25 +6851,14 @@ mod tests {
         ));
 
         session.handle_line(json!({
-            "event": "agent-changed",
+            "event": "surface-exited",
             "surface": 7,
-            "state": "working",
-            "source": "hook",
-            "session": null,
-            "updated_at_ms": 2,
+            "runtime_ms": 321,
         }));
-        assert!(!session.tree_is_stale());
-        assert_eq!(session.cached_agents()[0].surface, 7);
-        assert!(matches!(
-            events.recv_timeout(Duration::from_secs(1)),
-            Ok(MuxEvent::AgentChanged { surface: 7, .. })
-        ));
-
-        session.handle_line(json!({"event": "surface-exited", "surface": 7}));
         assert!(session.tree_is_stale());
         assert!(matches!(
             events.recv_timeout(Duration::from_secs(1)),
-            Ok(MuxEvent::SurfaceExited(7))
+            Ok(MuxEvent::SurfaceExited { surface: 7, runtime_ms: Some(321) })
         ));
     }
 
@@ -6777,7 +6883,7 @@ mod tests {
 
         assert!(matches!(
             events.recv_timeout(Duration::from_secs(1)),
-            Ok(MuxEvent::SurfaceExited(7))
+            Ok(MuxEvent::SurfaceExited { surface: 7, runtime_ms: None })
         ));
     }
 
@@ -8234,7 +8340,7 @@ mod tests {
         assert!(session.tree_is_stale());
         assert!(matches!(
             events.recv_timeout(Duration::from_secs(1)),
-            Ok(MuxEvent::SurfaceExited(7))
+            Ok(MuxEvent::SurfaceExited { surface: 7, runtime_ms: None })
         ));
     }
 

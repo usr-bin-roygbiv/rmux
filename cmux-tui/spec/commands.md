@@ -232,10 +232,10 @@ Example:
 
 ```json
 {"id":1,"cmd":"identify"}
-{"id":1,"ok":true,"data":{"app":"cmux-tui","version":"0.1.0","build_commit":"abc123","ghostty_commit":"def456","protocol":12,"capabilities":["attach-initial-size","surface-subscribe-filter","workspace-registry-v1","daemon-handoff-force-v1","browser-provider-v1","browser-pointer-frame-guard-v1","viewport-splits-v1","viewport-column-resize-v1","layout-undo-v1","clear-history-v1","clear-history-key-v1","view-attachment-lease-v1","view-attachment-detach-v1","creation-receipts-v1","creation-attempt-keys-v1","creation-selector-fallbacks-v1","provider-managed-workspace-authority-v2"],"session":"main","pid":12345}}
+{"id":1,"ok":true,"data":{"app":"cmux-tui","version":"0.1.0","build_commit":"abc123","ghostty_commit":"def456","protocol":12,"capabilities":["attach-initial-size","workspace-registry-v1","daemon-handoff-force-v1","browser-pointer-frame-guard-v1","viewport-splits-v1","viewport-column-resize-v1","layout-undo-v1","clear-history-v1","surface-subscribe-filter","session-journal-v1","frontend-journal-v1","view-attachment-lease-v1","view-attachment-detach-v1","creation-receipts-v1","creation-attempt-keys-v1","creation-selector-fallbacks-v1","provider-managed-workspace-authority-v2","browser-provider-v1","clear-history-key-v1"],"session":"main","pid":12345,"registry_id":"registry-1","generation":"generation-1","workspace_revision":7}}
 ```
 
-The current server reports protocol `12` in this field and in `ping`. Clients must negotiate protocol 8 before requiring stable split ids or sending `set-split-ratio`, protocol 9 before decoding stack layouts or sending `new-pane`, protocol 10 before using per-surface client sizing, protocol 11 before decoding terminal lifecycle creation results or minting terminal renderer credentials, and protocol 12 before decoding lifecycle readiness from `identify`.
+The current server reports protocol `12` in this field and in `ping`. Clients must negotiate protocol 8 before requiring stable split ids or sending `set-split-ratio`; protocol 9 before decoding stack layouts, sending `new-pane`, or using capability-gated `clear-history`; protocol 10 before using per-surface client sizing; protocol 11 before decoding terminal lifecycle creation results, minting terminal renderer credentials, or using upstream viewport/layout additions; and protocol 12 before decoding lifecycle readiness or using agent telemetry fields, the `error` agent state, `agent-state-changed`, or notification subtitles. `clear-history` additionally requires `clear-history-v1` and its structured fallback requires `clear-history-key-v1`.
 
 ### shutdown-daemon
 
@@ -814,7 +814,7 @@ CLI mapping: verb `apply-layout`; flags `[--workspace <id>] [--name <name>] [--c
 
 Writes input to a PTY surface. `text`, when present, is UTF-8 encoded and written as bytes. `bytes`, when present, is standard base64 decoded and written as raw bytes. If both are present, v5 writes `text` first and `bytes` second. If neither is present, v5 returns success and writes nothing.
 
-Protocol v7 adds `paste`. The payload is the concatenation of encoded `text` followed by decoded `bytes`. With `paste:true` and a non-empty payload, the server checks the target terminal's current DEC private mode 2004 while holding the terminal/input lock. If enabled, it writes `ESC [ 200 ~`, the payload, then `ESC [ 201 ~`; if disabled, it writes the payload unchanged. `paste:false` is the exact v5/v6 path. The server does not inspect or remove caller-supplied bracketed-paste markers.
+Protocol v7 adds `paste`. The payload is the concatenation of encoded `text` followed by decoded `bytes`. With `paste:true` and a non-empty payload, the server removes every complete embedded bracketed-paste begin/end marker from the combined payload, then checks the target terminal's current DEC private mode 2004 while holding the terminal/input lock. If sanitization leaves the payload empty, it returns success without writing delimiters. Otherwise, if mode 2004 is enabled, it writes `ESC [ 200 ~`, the sanitized payload, then `ESC [ 201 ~`; if disabled, it writes the sanitized payload unchanged. Malformed or partial markers are ordinary payload bytes. `paste:false` is the exact v5/v6 path.
 
 Params:
 
@@ -823,7 +823,7 @@ Params:
 | `surface` | `Id` | required | Must identify a live PTY surface |
 | `text` | `string` | default null | Written before `bytes` when both are present |
 | `bytes` | `Base64` | default null | Decoded with standard base64 |
-| `paste` | `boolean` | default false | Protocol 7; conditionally wraps the combined non-empty payload when DEC mode 2004 is enabled |
+| `paste` | `boolean` | default false | Protocol 7; strips embedded bracketed-paste markers and conditionally wraps the combined non-empty payload when DEC mode 2004 is enabled |
 
 Result:
 
@@ -3448,6 +3448,7 @@ Params:
 | Name | JSON type | Required/default | Constraints |
 | --- | --- | --- | --- |
 | `title` | `string` | required | Non-empty |
+| `subtitle` | `string|null` | default null | Optional concise notification category, rendered separately from title/body |
 | `body` | `string` | required | May be empty |
 | `level` | `string` | default `"info"` | `"info"`, `"warning"`, or `"error"` |
 | `surface` | `IdRef` | default null | Optional originating surface |
@@ -3472,7 +3473,7 @@ CLI mapping:
 | Item | Value |
 | --- | --- |
 | Verb | `notify` |
-| Flags | `--title <title> --body <body> [--level info|warning|error] [--surface <id>]` |
+| Flags | `--title <title> --body <body> [--subtitle <subtitle>] [--level info\|warning\|error] [--surface <id>]` |
 | Plain stdout | notification id followed by newline |
 | JSON stdout | exact result object |
 | Exit codes | common |
@@ -3480,7 +3481,7 @@ CLI mapping:
 Example:
 
 ```json
-{"id":106,"cmd":"notify","title":"Build failed","body":"api tests failed","level":"error","surface":1}
+{"id":106,"cmd":"notify","title":"Build","subtitle":"Error","body":"api tests failed","level":"error","surface":1}
 {"id":106,"ok":true,"data":{"notification":44}}
 ```
 
@@ -3507,9 +3508,17 @@ Result:
 object{
   agents: array<object{
     surface: Id,
-    state: "working"|"blocked"|"idle"|"done"|"unknown",
+    state: "working"|"blocked"|"idle"|"done"|"error"|"unknown",
     source: "detected"|"socket"|"hook",
+    root_session: bool,
     session: string|null,
+    label?: string|null,
+    detail?: string|null,
+    started_at_ms?: uint64|null,
+    tasks_completed?: uint64|null,
+    tasks_total?: uint64|null,
+    jobs_running?: uint64|null,
+    agents_active?: uint64|null,
     updated_at_ms: uint64
   }>
 }
@@ -3528,7 +3537,7 @@ CLI mapping:
 | Item | Value |
 | --- | --- |
 | Verb | `list-agents` |
-| Flags | `[--surface <id>] [--state working|blocked|idle|done|unknown]` |
+| Flags | `[--surface <id>] [--state working\|blocked\|idle\|done\|error\|unknown]` |
 | Plain stdout | one line per agent: `<surface> <state> <source> <session-or->` |
 | JSON stdout | exact result object |
 | Exit codes | common |
@@ -3567,14 +3576,22 @@ Params:
 | Name | JSON type | Required/default | Constraints |
 | --- | --- | --- | --- |
 | `surface` | `IdRef` | required | Surface associated with the agent |
-| `state` | `string` | required | `"working"`, `"blocked"`, `"idle"`, `"done"`, or `"unknown"` |
+| `state` | `string` | required | `"working"`, `"blocked"`, `"idle"`, `"done"`, `"error"`, or `"unknown"` |
 | `source` | `string` | required | `"socket"` or `"hook"` |
+| `root_session` | `bool` | default false | Protocol 12: authoritative root-session identity for workspace aggregation |
 | `session` | `string` | default null | Optional upstream agent session id |
+| `label` | `string` | default null | Human-readable agent label |
+| `detail` | `string` | default null | Current tool, todo phase/item, or subagent activity |
+| `started_at_ms` | `uint64` | default null | Unix epoch milliseconds when work started |
+| `tasks_completed` | `uint64` | default null | Completed todo/task count |
+| `tasks_total` | `uint64` | default null | Total todo/task count |
+| `jobs_running` | `uint64` | default null | Running asynchronous job count |
+| `agents_active` | `uint64` | default null | Root plus live subagent count |
 
 Result:
 
 ```text
-object{surface:Id,state:string,source:string,session:string|null}
+object{surface:Id,state:string,source:string,root_session:bool,session:string|null,label:string|null,detail:string|null,started_at_ms:uint64|null,tasks_completed:uint64|null,tasks_total:uint64|null,jobs_running:uint64|null,agents_active:uint64|null,updated_at_ms:uint64}
 ```
 
 Errors:
@@ -3593,7 +3610,7 @@ CLI mapping:
 | Item | Value |
 | --- | --- |
 | Verb | `report-agent` |
-| Flags | `--surface <id> --state working|blocked|idle|done|unknown --source socket|hook [--session <id>]` |
+| Flags | `--surface <id> --state working\|blocked\|idle\|done\|error\|unknown --source socket\|hook [--root-session] [--session <id>] [--label <label>] [--detail <detail>] [--started-at-ms <n>] [--tasks-completed <n>] [--tasks-total <n>] [--jobs-running <n>] [--agents-active <n>]` |
 | Plain stdout | no output |
 | JSON stdout | exact result object |
 | Exit codes | common |
@@ -3601,8 +3618,8 @@ CLI mapping:
 Example:
 
 ```json
-{"id":108,"cmd":"report-agent","surface":1,"state":"working","source":"socket","session":"abc"}
-{"id":108,"ok":true,"data":{"surface":1,"state":"working","source":"socket","session":"abc"}}
+{"id":108,"cmd":"report-agent","surface":1,"state":"working","source":"socket","root_session":true,"session":"abc","label":"root","detail":"reviewing","started_at_ms":1710000000000,"tasks_completed":3,"tasks_total":5,"jobs_running":2,"agents_active":4}
+{"id":108,"ok":true,"data":{"surface":1,"state":"working","source":"socket","root_session":true,"session":"abc","label":"root","detail":"reviewing","started_at_ms":1710000000000,"tasks_completed":3,"tasks_total":5,"jobs_running":2,"agents_active":4,"updated_at_ms":1710000001000}}
 ```
 
 ## Journal hooks

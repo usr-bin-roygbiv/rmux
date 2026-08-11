@@ -13,6 +13,12 @@ import WebKit
 struct BrowserPortalFirstRevealScrollTests {
     private final class RecordingWebView: WKWebView {
         var frameSizeCalls: [NSSize] = []
+        private(set) var displayIfNeededCount = 0
+
+        override func displayIfNeeded() {
+            displayIfNeededCount += 1
+            super.displayIfNeeded()
+        }
 
         override func setFrameSize(_ newSize: NSSize) {
             frameSizeCalls.append(newSize)
@@ -91,7 +97,6 @@ struct BrowserPortalFirstRevealScrollTests {
         defer {
             webView.stopLoading()
             window.orderOut(nil)
-            window.close()
         }
 
         #expect(webView.window === window)
@@ -116,7 +121,6 @@ struct BrowserPortalFirstRevealScrollTests {
         defer {
             webView.stopLoading()
             fixture.window.orderOut(nil)
-            fixture.window.close()
         }
 
         #expect(webView.window === fixture.window)
@@ -140,7 +144,6 @@ struct BrowserPortalFirstRevealScrollTests {
         defer {
             webView.stopLoading()
             fixture.window.orderOut(nil)
-            fixture.window.close()
         }
 
         #expect(webView.window === fixture.window)
@@ -160,7 +163,6 @@ struct BrowserPortalFirstRevealScrollTests {
         let fixture = makeWindowFixture()
         defer {
             fixture.window.orderOut(nil)
-            fixture.window.close()
         }
         let webView = RecordingWebView(
             frame: NSRect(x: 0, y: 0, width: 300, height: 180),
@@ -204,6 +206,7 @@ struct BrowserPortalFirstRevealScrollTests {
 
         webView.browserPortalPrepareForHiddenHostAdoption()
         #expect(webView.browserPortalNeedsFirstSizedRevealNudge)
+        let displayCountBeforeReveal = webView.displayIfNeededCount
 
         BrowserWindowPortalRegistry.bind(webView: webView, to: fixture.anchor, visibleInUI: true)
         BrowserWindowPortalRegistry.synchronizeForAnchor(fixture.anchor)
@@ -214,10 +217,24 @@ struct BrowserPortalFirstRevealScrollTests {
         let revealedSize = slot.bounds.size
         let nudgedSize = NSSize(width: revealedSize.width, height: max(1, revealedSize.height - 1))
 
+        #expect(
+            webView.frameSizeCalls.filter { size($0, approximatelyEquals: nudgedSize) }.count == 1,
+            "Portal bind should apply one first-sized nudge synchronously against settled slot bounds."
+        )
+        #expect(
+            size(webView.frame.size, approximatelyEquals: nudgedSize),
+            "The first-sized nudge should remain pending only until the causal next main turn."
+        )
+        await waitForNextMainTurn()
+
         #expect(webView.frameSizeCalls.filter { size($0, approximatelyEquals: nudgedSize) }.count == 1)
         #expect(webView.frameSizeCalls.contains { size($0, approximatelyEquals: revealedSize) })
         #expect(size(webView.frame.size, approximatelyEquals: revealedSize))
         #expect(!webView.browserPortalNeedsFirstSizedRevealNudge)
+        #expect(
+            webView.displayIfNeededCount == displayCountBeforeReveal,
+            "The one-point first-reveal nudge should invalidate layout without synchronously flushing display."
+        )
         #expect(fixture.window.firstResponder === firstResponder)
 
         webView.frameSizeCalls.removeAll()

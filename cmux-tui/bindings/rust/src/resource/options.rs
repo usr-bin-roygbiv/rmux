@@ -797,6 +797,7 @@ impl NotificationLevel {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NotificationOptions {
     pub title: String,
+    pub subtitle: Update<String>,
     pub body: String,
     pub level: Option<NotificationLevel>,
     pub terminal_id: Option<TerminalId>,
@@ -814,6 +815,7 @@ pub enum AgentState {
     Blocked,
     Idle,
     Done,
+    Error,
     Unknown,
 }
 
@@ -824,6 +826,7 @@ impl AgentState {
             Self::Blocked => "blocked",
             Self::Idle => "idle",
             Self::Done => "done",
+            Self::Error => "error",
             Self::Unknown => "unknown",
         }
     }
@@ -850,6 +853,14 @@ pub struct AgentReportOptions {
     pub state: AgentState,
     pub source: AgentSource,
     pub source_session: Option<String>,
+    pub root_session: Option<bool>,
+    pub label: Update<String>,
+    pub detail: Update<String>,
+    pub started_at_ms: Update<u64>,
+    pub tasks_completed: Update<u64>,
+    pub tasks_total: Update<u64>,
+    pub jobs_running: Update<u64>,
+    pub agents_active: Update<u64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

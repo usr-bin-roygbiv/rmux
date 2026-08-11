@@ -2002,6 +2002,24 @@ fn client_reserved_short_lived_create_replays_its_durable_exit_without_topology(
     } else {
         assert!(first["exit"].is_null());
     }
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let resolved = loop {
+        let resolved = request(
+            &harness.socket,
+            serde_json::json!({"id":3,"cmd":"resolve-terminal","terminal_id":terminal_id}),
+        );
+        if resolved["lifecycle"] == "exited" && resolved["surface"].is_null() {
+            break resolved;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "client-reserved short-lived terminal did not exit: {resolved}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(resolved["exit"]["outcome"], serde_json::json!({"kind":"exit","code":17}));
+    assert_eq!(resolved["surface"], serde_json::Value::Null);
     wait_for_no_host_records(&harness.host_root());
 
     let retry = request(&harness.socket, create);
@@ -2009,7 +2027,7 @@ fn client_reserved_short_lived_create_replays_its_durable_exit_without_topology(
     assert_eq!(retry["terminal_id"], terminal_id);
     assert_eq!(retry["already_exited"], true);
     assert_eq!(retry["lifecycle"], "exited");
-    assert_eq!(retry["exit"]["outcome"], serde_json::json!({"kind":"exit","code":17}));
+    assert_eq!(retry["exit"], resolved["exit"]);
     assert_eq!(retry["surface"], serde_json::Value::Null);
     assert_eq!(retry["pane"], serde_json::Value::Null);
     assert_eq!(retry["screen"], serde_json::Value::Null);
@@ -2048,6 +2066,19 @@ fn stalled_renderer_is_disconnected_without_freezing_the_host() {
         CapabilityRights::RENDERER,
     )
     .unwrap();
+    let receive_bytes: libc::c_int = 4 * 1024;
+    // SAFETY: the stream owns a live Unix socket and the option pointer
+    // references a correctly sized integer for the duration of the call.
+    let result = unsafe {
+        libc::setsockopt(
+            stalled.stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            (&receive_bytes as *const libc::c_int).cast(),
+            size_of_val(&receive_bytes) as libc::socklen_t,
+        )
+    };
+    assert_eq!(result, 0, "set deterministic stalled-renderer receive buffer");
 
     request(
         &harness.socket,
@@ -3383,11 +3414,7 @@ fn wait_for_pid_file(path: &Path) -> libc::pid_t {
 fn wait_for_process_and_group_absent(pid: libc::pid_t) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let process_exists = process_exists(pid);
-        // SAFETY: same signal-0 probe for the positive process-group id.
-        let group_exists = unsafe { libc::killpg(pid, 0) } == 0
-            || std::io::Error::last_os_error().kind() == std::io::ErrorKind::PermissionDenied;
-        if !process_exists && !group_exists {
+        if !process_exists(pid) && !process_group_exists(pid) {
             return;
         }
         assert!(Instant::now() < deadline, "terminated PTY process/group {pid} remained alive");
@@ -3395,10 +3422,58 @@ fn wait_for_process_and_group_absent(pid: libc::pid_t) {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn linux_process_state_and_group(pid: libc::pid_t) -> Option<(char, libc::pid_t)> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (_, fields) = stat.rsplit_once(") ")?;
+    let mut fields = fields.split_whitespace();
+    let state = fields.next()?.chars().next()?;
+    let _parent = fields.next()?;
+    let group = fields.next()?.parse().ok()?;
+    Some((state, group))
+}
+
 fn process_exists(pid: libc::pid_t) -> bool {
-    // SAFETY: signal 0 performs existence/permission checks only.
-    (unsafe { libc::kill(pid, 0) }) == 0
-        || std::io::Error::last_os_error().kind() == std::io::ErrorKind::PermissionDenied
+    // SAFETY: signal zero performs only an existence/permission check.
+    let signal_succeeded = unsafe { libc::kill(pid, 0) == 0 };
+    let visible =
+        signal_succeeded || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+    if !visible {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux_process_state_and_group(pid).is_some_and(|(state, _)| state != 'Z')
+    }
+    #[cfg(not(target_os = "linux"))]
+    true
+}
+
+fn process_group_exists(pid: libc::pid_t) -> bool {
+    // SAFETY: signal zero performs only an existence/permission check.
+    let signal_succeeded = unsafe { libc::killpg(pid, 0) == 0 };
+    let visible =
+        signal_succeeded || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+    if !visible {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(processes) = fs::read_dir("/proc") else {
+            return true;
+        };
+        processes.filter_map(Result::ok).any(|entry| {
+            let Some(candidate) =
+                entry.file_name().to_str().and_then(|name| name.parse::<libc::pid_t>().ok())
+            else {
+                return false;
+            };
+            linux_process_state_and_group(candidate)
+                .is_some_and(|(state, group)| group == pid && state != 'Z')
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    true
 }
 
 fn wait_for_host_size(root: &Path, cols: u16, rows: u16) {

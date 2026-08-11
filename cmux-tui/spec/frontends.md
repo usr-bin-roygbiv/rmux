@@ -24,16 +24,16 @@ Only then send protocol requests. See [`transports.md`](transports.md#authentica
 
 ## 2. Identify And Select Capabilities
 
-Send [`identify`](commands.md#identify) immediately after connecting. Verify `data.app == "cmux-tui"` and `data.protocol == 12` before enabling protocol-v12 behavior. Preserve request `id` values and route every non-event response back to the pending request with that id.
+Send [`identify`](commands.md#identify) immediately after connecting. Verify `data.app == "cmux-tui"` and `data.protocol == 12` before enabling the complete flow. Preserve request `id` values and route every non-event response back to the pending request with that id.
 
 ```json
 {"id":1,"cmd":"identify"}
-{"id":1,"ok":true,"data":{"app":"cmux-tui","version":"0.1.0","protocol":12,"capabilities":["view-attachment-lease-v1","view-attachment-detach-v1","creation-receipts-v1","creation-attempt-keys-v1","creation-selector-fallbacks-v1"],"session":"main","pid":12345}}
+{"id":1,"ok":true,"data":{"app":"cmux-tui","version":"0.1.0","protocol":12,"capabilities":["attach-initial-size","workspace-registry-v1","daemon-handoff-force-v1","browser-pointer-frame-guard-v1","viewport-splits-v1","viewport-column-resize-v1","layout-undo-v1","clear-history-v1","surface-subscribe-filter","session-journal-v1","frontend-journal-v1","view-attachment-lease-v1","view-attachment-detach-v1","creation-receipts-v1","creation-attempt-keys-v1","creation-selector-fallbacks-v1","provider-managed-workspace-authority-v2","browser-provider-v1","clear-history-key-v1"],"session":"main","pid":12345}}
 {"id":2,"cmd":"set-client-info","kind":"frontend","capabilities":["view-attachment-lease-v1","view-attachment-detach-v1","creation-receipts-v1","creation-attempt-keys-v1","creation-selector-fallbacks-v1"]}
 {"id":2,"ok":true,"data":{}}
 ```
 
-Require `protocol == 12` for the complete flow in this guide, including lifecycle readiness, terminal lifecycle results, and per-surface client sizing. Stack layouts and `new-pane` remain available on protocol 9. Stable split ids and `set-split-ratio` remain available on protocol 8. Render mode, `read-scrollback`, bracketed-paste handling, and lifecycle deltas remain available on protocol 7. A frontend may fall back to protocol-v6 byte attach; it must not send newer fields to an older server.
+Require `protocol == 12` for the complete flow in this guide, including lifecycle readiness, lifecycle telemetry, terminal lifecycle results, the `error` agent state, notification subtitles, and per-surface client sizing. Upstream viewport/layout behavior remains protocol 11, per-surface client sizing protocol 10, stack layouts and `new-pane` protocol 9, stable split ids and `set-split-ratio` protocol 8, and render mode, `read-scrollback`, bracketed-paste handling, and lifecycle deltas protocol 7. A frontend may fall back to protocol-v6 byte attach; it must not send newer fields to an older server. Use `clear-history` only with `identify.protocol >= 9` and the advertised `clear-history-v1` capability; structured fallback keys also require `clear-history-key-v1`.
 
 Echo every optional capability the frontend will use through
 `set-client-info`. Capability state belongs to this connection. Lease-capable
@@ -120,7 +120,7 @@ render-state -> (render-delta | scroll-changed)* -> detached
 
 The initial snapshot and render tap are registered under one lock, so there is no missing or duplicated frame between them. Attach events may arrive before the attach command response.
 
-Call [`list-agents`](commands.md#list-agents) to read current agent records, optionally filtered by surface or state. Agent producers report state through [`report-agent`](commands.md#report-agent); a presentation-only frontend normally reads and displays these records rather than inventing its own agent state. There is no dedicated agent-change event in protocol v11, so re-fetch after a frontend reports state and when tree or surface lifecycle events make the presentation stale.
+Call [`list-agents`](commands.md#list-agents) to seed current agent records, optionally filtered by surface or state, then update the cache from protocol-v12 `agent-state-changed` events. Agent producers report through [`report-agent`](commands.md#report-agent). Optional fields may be absent from older producers and must decode as null; frontends should preserve state-specific severity and display `detail` as the current tool, todo phase/item, or subagent activity.
 
 `render-state.scrollback_rows` and later count changes tell the frontend whether history exists. Fetch visible history in bounded pages with [`read-scrollback`](commands.md#read-scrollback); do not assume indexes remain stable across eviction or resize reflow. Merge pages and project absolute graphics anchors only when the page `epoch` equals the render `history_epoch`; suppress graphics and reload the page after a mismatch.
 

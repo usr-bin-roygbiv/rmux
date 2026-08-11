@@ -247,6 +247,7 @@
   },
   "events": [
     {"name": "agent-changed", "streams": ["subscribe"]},
+    {"name": "agent-state-changed", "streams": ["subscribe"]},
     {"name": "bell", "streams": ["subscribe"]},
     {"name": "browser-state", "streams": ["attach-browser"]},
     {"name": "client-attached", "streams": ["subscribe"]},

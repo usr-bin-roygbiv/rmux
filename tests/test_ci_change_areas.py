@@ -734,12 +734,14 @@ def test_perf_activation_workflow_keeps_required_status_while_gating_benchmark()
 
     benchmark = workflow_job_block("activation-session-benchmark", PERF_ACTIVATION_WORKFLOW)
     sentinel = workflow_job_block("activation-session", PERF_ACTIVATION_WORKFLOW)
+    paired = workflow_job_block("paired-experiment", PERF_ACTIVATION_WORKFLOW)
 
     assert "needs: activation_changes" in benchmark
-    assert "if: ${{ needs.activation_changes.outputs.macos == 'true' }}" in benchmark
+    assert "if: ${{ needs.activation_changes.outputs.macos == 'true' && !inputs.paired_only }}" in benchmark
     # The benchmark routes through MACOS_RUNNER_15 (Blacksmith) for all events,
     # including PRs. Depot remains only as a manual workflow_dispatch override.
     assert "vars.MACOS_RUNNER_15" in benchmark
+    assert "if: ${{ inputs.baseline_sha != '' && inputs.candidate_sha != '' }}" in paired
 
     assert "      - activation_changes" in sentinel
     assert "      - activation-session-benchmark" in sentinel

@@ -808,16 +808,44 @@ test("optional fields and expected revisions reach the wire", async () => {
       current.ok(request, []);
       return;
     }
+    if (request.operation === "notification.create") {
+      const params = request.params as Envelope;
+      current.ok(request, {
+        value: {
+          id: NOTIFICATION,
+          session_id: SESSION,
+          title: params.title,
+          body: params.body,
+          subtitle: Object.hasOwn(params, "subtitle") ? params.subtitle : null,
+          level: params.level ?? "info",
+          terminal_id: params.terminal_id,
+          created_at_ms: "9",
+          unread: true,
+        },
+        generation: "generation-a",
+        revision: "9",
+        replayed: false,
+      });
+      return;
+    }
     if (request.operation === "agent.report") {
       current.ok(request, {
         value: {
           id: AGENT,
           session_id: SESSION,
           terminal_id: TERMINAL,
-          state: "working",
+          state: "error",
           source: "socket",
           source_session: "codex-1",
           updated_at_ms: "10",
+          root_session: true,
+          label: "reviewer",
+          detail: null,
+          started_at_ms: "1000",
+          tasks_completed: "2",
+          tasks_total: "5",
+          jobs_running: "1",
+          agents_active: null,
         },
         generation: "generation-a",
         revision: "9",
@@ -876,12 +904,31 @@ test("optional fields and expected revisions reach the wire", async () => {
     await session.listAgents({ terminalId: TERMINAL, state: "working" }),
     [],
   );
+  const createdWithoutSubtitle = await session.createNotification({
+    title: "without subtitle",
+    body: "body",
+  });
+  const createdWithNullSubtitle = await session.createNotification({
+    title: "null subtitle",
+    body: "body",
+    subtitle: null,
+  });
+  assert.equal(createdWithoutSubtitle.value.snapshot?.subtitle, null);
+  assert.equal(createdWithNullSubtitle.value.snapshot?.subtitle, null);
   const reported = await session.reportAgent(
     {
       terminalId: TERMINAL,
-      state: "working",
+      state: "error",
       source: "socket",
       sourceSession: "codex-1",
+      rootSession: true,
+      label: "reviewer",
+      detail: null,
+      startedAtMs: decimalString("1000"),
+      tasksCompleted: decimalString("2"),
+      tasksTotal: decimalString("5"),
+      jobsRunning: decimalString("1"),
+      agentsActive: null,
     },
     {
       idempotencyKey: "agent-status",
@@ -889,7 +936,7 @@ test("optional fields and expected revisions reach the wire", async () => {
     },
   );
   assert.equal(reported.value.id, AGENT);
-  assert.equal(reported.value.snapshot?.state, "working");
+  assert.equal(reported.value.snapshot?.state, "error");
   assert.equal("report" in reported.value, false);
   const request = (operation: string): Envelope =>
     transport.requests.find((item) => item.operation === operation)!;
@@ -922,14 +969,43 @@ test("optional fields and expected revisions reach the wire", async () => {
     TERMINAL,
   );
   assert.equal((request("agent.list").params as Envelope).state, "working");
+  const notificationCreates = transport.requests.filter(
+    (item) => item.operation === "notification.create",
+  );
+  assert.equal(notificationCreates.length, 2);
+  assert.deepEqual(notificationCreates[0]?.params, {
+    machine: "current",
+    session: SESSION,
+    title: "without subtitle",
+    body: "body",
+  });
+  assert.equal(
+    Object.hasOwn(notificationCreates[0]?.params as Envelope, "subtitle"),
+    false,
+  );
+  assert.deepEqual(notificationCreates[1]?.params, {
+    machine: "current",
+    session: SESSION,
+    title: "null subtitle",
+    body: "body",
+    subtitle: null,
+  });
   assert.equal(request("agent.report").idempotency_key, "agent-status");
   assert.deepEqual(request("agent.report").params, {
     machine: "current",
     session: SESSION,
     terminal_id: TERMINAL,
-    state: "working",
+    state: "error",
     source: "socket",
     source_session: "codex-1",
+    root_session: true,
+    label: "reviewer",
+    detail: null,
+    started_at_ms: "1000",
+    tasks_completed: "2",
+    tasks_total: "5",
+    jobs_running: "1",
+    agents_active: null,
     expected_revision: "9",
   });
   assert.equal(
@@ -1631,6 +1707,7 @@ test("auxiliary resource discriminants select their decoder and preserve extra f
             session_id: SESSION,
             title: "build complete",
             body: "all checks passed",
+            subtitle: "CI passed",
             level: "info",
             terminal_id: TERMINAL,
             created_at_ms: "1000",
@@ -1647,10 +1724,18 @@ test("auxiliary resource discriminants select their decoder and preserve extra f
             id: AGENT,
             session_id: SESSION,
             terminal_id: TERMINAL,
-            state: "working",
-            source: "socket",
+            state: "error",
+            source: "detected",
             updated_at_ms: "1001",
             source_session: "codex-1",
+            root_session: true,
+            label: "reviewer",
+            detail: null,
+            started_at_ms: "900",
+            tasks_completed: "2",
+            tasks_total: "5",
+            jobs_running: "1",
+            agents_active: null,
             extra: { model: "gpt" },
           },
         },
@@ -1715,11 +1800,21 @@ test("auxiliary resource discriminants select their decoder and preserve extra f
       case "notification":
         assert.equal(change.value.id, NOTIFICATION);
         assert.equal(change.value.title, "build complete");
+        assert.equal(change.value.subtitle, "CI passed");
         assert.deepEqual(change.value.extra, { delivery: "native" });
         break;
       case "agent":
         assert.equal(change.value.id, AGENT);
-        assert.equal(change.value.state, "working");
+        assert.equal(change.value.state, "error");
+        assert.equal(change.value.source, "detected");
+        assert.equal(change.value.rootSession, true);
+        assert.equal(change.value.label, "reviewer");
+        assert.equal(change.value.detail, null);
+        assert.equal(change.value.startedAtMs, decimalString("900"));
+        assert.equal(change.value.tasksCompleted, decimalString("2"));
+        assert.equal(change.value.tasksTotal, decimalString("5"));
+        assert.equal(change.value.jobsRunning, decimalString("1"));
+        assert.equal(change.value.agentsActive, null);
         assert.deepEqual(change.value.extra, { model: "gpt" });
         break;
       case "pairing_request":
@@ -1769,6 +1864,7 @@ test("auxiliary resource discriminants select their decoder and preserve extra f
           session_id: SESSION,
           title: "future",
           body: "field",
+          subtitle: null,
           level: "info",
           created_at_ms: "1002",
           unread: false,

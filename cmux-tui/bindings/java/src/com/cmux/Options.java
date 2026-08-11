@@ -20,7 +20,7 @@ public final class Options {
         public String toWire() { return name().toLowerCase(java.util.Locale.ROOT); }
     }
 
-    public enum AgentState { WORKING, BLOCKED, IDLE, DONE, UNKNOWN;
+    public enum AgentState { WORKING, BLOCKED, IDLE, DONE, ERROR, UNKNOWN;
         public String toWire() { return name().toLowerCase(java.util.Locale.ROOT); }
     }
 
@@ -74,6 +74,26 @@ public final class Options {
             return new NullableString(true, Optional.of(Objects.requireNonNull(value, "value")));
         }
         public Object toWire() { return value.orElse(null); }
+    }
+
+    /** Three-state optional nullable unsigned decimal. */
+    public record NullableDecimal(boolean present, Optional<Decimal> value) {
+        public NullableDecimal { value = opt(value); }
+        public static NullableDecimal absent() {
+            return new NullableDecimal(false, Optional.empty());
+        }
+        public static NullableDecimal nullValue() {
+            return new NullableDecimal(true, Optional.empty());
+        }
+        public static NullableDecimal of(Decimal value) {
+            return new NullableDecimal(
+                true,
+                Optional.of(Objects.requireNonNull(value, "value"))
+            );
+        }
+        public Object toWire() {
+            return value.map(Decimal::toWire).orElse(null);
+        }
     }
 
     public record SessionOpen(Mutation mutation) {
@@ -753,7 +773,8 @@ public final class Options {
         String title,
         String body,
         Optional<String> level,
-        Optional<Ids.TerminalId> terminalId
+        Optional<Ids.TerminalId> terminalId,
+        NullableString subtitle
     ) {
         public NotificationCreate {
             mutation = mut(mutation);
@@ -761,6 +782,24 @@ public final class Options {
             Objects.requireNonNull(body, "body");
             level = opt(level);
             terminalId = opt(terminalId);
+            subtitle = subtitle == null ? NullableString.absent() : subtitle;
+        }
+
+        public NotificationCreate(
+            Mutation mutation,
+            String title,
+            String body,
+            Optional<String> level,
+            Optional<Ids.TerminalId> terminalId
+        ) {
+            this(
+                mutation,
+                title,
+                body,
+                level,
+                terminalId,
+                NullableString.nullValue()
+            );
         }
 
         public NotificationCreate(
@@ -777,7 +816,15 @@ public final class Options {
         Ids.TerminalId terminalId,
         AgentState state,
         AgentSource source,
-        Optional<String> sourceSession
+        Optional<String> sourceSession,
+        Optional<Boolean> rootSession,
+        NullableString label,
+        NullableString detail,
+        NullableDecimal startedAtMS,
+        NullableDecimal tasksCompleted,
+        NullableDecimal tasksTotal,
+        NullableDecimal jobsRunning,
+        NullableDecimal agentsActive
     ) {
         public AgentReport {
             mutation = mut(mutation);
@@ -785,6 +832,38 @@ public final class Options {
             Objects.requireNonNull(state, "state");
             Objects.requireNonNull(source, "source");
             sourceSession = opt(sourceSession);
+            rootSession = opt(rootSession);
+            label = label == null ? NullableString.absent() : label;
+            detail = detail == null ? NullableString.absent() : detail;
+            startedAtMS = nullableDecimal(startedAtMS);
+            tasksCompleted = nullableDecimal(tasksCompleted);
+            tasksTotal = nullableDecimal(tasksTotal);
+            jobsRunning = nullableDecimal(jobsRunning);
+            agentsActive = nullableDecimal(agentsActive);
+        }
+
+        public AgentReport(
+            Mutation mutation,
+            Ids.TerminalId terminalId,
+            AgentState state,
+            AgentSource source,
+            Optional<String> sourceSession
+        ) {
+            this(
+                mutation,
+                terminalId,
+                state,
+                source,
+                sourceSession,
+                Optional.empty(),
+                NullableString.absent(),
+                NullableString.absent(),
+                NullableDecimal.absent(),
+                NullableDecimal.absent(),
+                NullableDecimal.absent(),
+                NullableDecimal.absent(),
+                NullableDecimal.absent()
+            );
         }
     }
     public record SidebarEnsure(
@@ -807,6 +886,10 @@ public final class Options {
     public record SidebarResize(Mutation mutation, int columns, int rows) {
         public SidebarResize { mutation = mut(mutation); nonnegative(columns, "columns"); nonnegative(rows, "rows"); }
     }
+    private static NullableDecimal nullableDecimal(NullableDecimal value) {
+        return value == null ? NullableDecimal.absent() : value;
+    }
+
     private Options() {}
 
     static String validateIdempotencyKey(String key) {

@@ -406,7 +406,9 @@ public final class CiOrchestrator {
             Options.Mutation.defaults(),
             title,
             body,
-            Optional.of("error")
+            Optional.of("error"),
+            Optional.empty(),
+            Options.NullableString.nullValue()
         ));
     }
 
@@ -421,7 +423,8 @@ public final class CiOrchestrator {
             title,
             body,
             Optional.of("error"),
-            Optional.of(terminalId)
+            Optional.of(terminalId),
+            Options.NullableString.nullValue()
         ));
     }
 

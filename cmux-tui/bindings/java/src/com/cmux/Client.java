@@ -2373,6 +2373,7 @@ public final class Client implements AutoCloseable {
             ),
             requiredExactId(fields, "session_id", Ids.SessionId::new),
             Wire.string(fields.get(Wire.TITLE), "notification title"),
+            requiredNullableString(fields, "subtitle"),
             Wire.string(fields.get(Wire.BODY), "notification body"),
             Wire.string(fields.get(Wire.LEVEL), "notification level"),
             optionalExactId(fields, "terminal_id", Ids.TerminalId::new),
@@ -2386,6 +2387,7 @@ public final class Client implements AutoCloseable {
                 "id",
                 "session_id",
                 Wire.TITLE,
+                "subtitle",
                 Wire.BODY,
                 Wire.LEVEL,
                 "terminal_id",
@@ -2405,6 +2407,14 @@ public final class Client implements AutoCloseable {
             Wire.string(fields.get("source"), "agent source"),
             Wire.decimal(fields.get("updated_at_ms"), "agent updated_at_ms"),
             requiredNullableString(fields, "source_session"),
+            Wire.bool(fields.get("root_session"), "agent root_session"),
+            requiredNullableString(fields, "label"),
+            requiredNullableString(fields, "detail"),
+            requiredNullableDecimal(fields, "started_at_ms"),
+            requiredNullableDecimal(fields, "tasks_completed"),
+            requiredNullableDecimal(fields, "tasks_total"),
+            requiredNullableDecimal(fields, "jobs_running"),
+            requiredNullableDecimal(fields, "agents_active"),
             snapshotExtra(
                 fields,
                 "id",
@@ -2413,7 +2423,15 @@ public final class Client implements AutoCloseable {
                 Wire.STATE,
                 "source",
                 "updated_at_ms",
-                "source_session"
+                "source_session",
+                "root_session",
+                "label",
+                "detail",
+                "started_at_ms",
+                "tasks_completed",
+                "tasks_total",
+                "jobs_running",
+                "agents_active"
             )
         );
     }
@@ -3646,6 +3664,18 @@ public final class Client implements AutoCloseable {
         return fields.get(Wire.REVISION) == null
             ? Optional.empty()
             : Optional.of(Wire.decimal(fields.get(Wire.REVISION), Wire.REVISION));
+    }
+
+    static Optional<Decimal> requiredNullableDecimal(
+        Map<String, Object> fields,
+        String key
+    ) {
+        if (!fields.containsKey(key)) {
+            throw new ProtocolError(key + " is required, although it may be null");
+        }
+        return fields.get(key) == null
+            ? Optional.empty()
+            : Optional.of(Wire.decimal(fields.get(key), key));
     }
 
     static int integer(Map<String, Object> fields, String key) {

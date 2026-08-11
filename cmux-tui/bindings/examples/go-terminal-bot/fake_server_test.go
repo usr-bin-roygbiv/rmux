@@ -173,6 +173,7 @@ func (server *fakeServer) result(request map[string]any) any {
 		return mutation(map[string]any{
 			"id": fakeNotificationID, "session_id": fakeSessionID,
 			"title": params["title"], "body": params["body"], "level": params["level"],
+			"subtitle":    params["subtitle"],
 			"terminal_id": fakeTerminalID, "created_at_ms": "100", "unread": true,
 		}, "4")
 	case "workspace.close":

@@ -892,12 +892,13 @@ function notificationSnapshot(value: unknown): NotificationSnapshot {
   const payload = unwrap(value, ["notification"]);
   return Object.freeze({
     ...snapshotFields(payload, notificationId, [
-      "session_id", "title", "body", "level", "terminal_id", "created_at_ms",
-      "unread",
+      "session_id", "title", "body", "subtitle", "level", "terminal_id",
+      "created_at_ms", "unread",
     ]),
     sessionId: requiredId(payload, ["session_id"], sessionId),
     title: requiredString(payload, "title"),
     body: requiredString(payload, "body"),
+    subtitle: requiredNullableString(payload, "subtitle"),
     level: requiredEnum(
       payload,
       "level",
@@ -917,14 +918,15 @@ function agentSnapshot(value: unknown): AgentSnapshot {
   return Object.freeze({
     ...snapshotFields(payload, agentId, [
       "session_id", "terminal_id", "state", "source", "updated_at_ms",
-      "source_session",
+      "source_session", "root_session", "label", "detail", "started_at_ms",
+      "tasks_completed", "tasks_total", "jobs_running", "agents_active",
     ]),
     sessionId: requiredId(payload, ["session_id"], sessionId),
     terminalId: requiredId(payload, ["terminal_id"], terminalId),
     state: requiredEnum(
       payload,
       "state",
-      ["working", "blocked", "idle", "done", "unknown"] as const,
+      ["working", "blocked", "idle", "done", "error", "unknown"] as const,
     ),
     source: requiredEnum(
       payload,
@@ -933,6 +935,14 @@ function agentSnapshot(value: unknown): AgentSnapshot {
     ),
     updatedAtMs: requiredDecimal(payload, "updated_at_ms"),
     sourceSession: requiredNullableString(payload, "source_session"),
+    rootSession: requiredBoolean(payload, "root_session"),
+    label: requiredNullableString(payload, "label"),
+    detail: requiredNullableString(payload, "detail"),
+    startedAtMs: requiredNullableDecimal(payload, "started_at_ms"),
+    tasksCompleted: requiredNullableDecimal(payload, "tasks_completed"),
+    tasksTotal: requiredNullableDecimal(payload, "tasks_total"),
+    jobsRunning: requiredNullableDecimal(payload, "jobs_running"),
+    agentsActive: requiredNullableDecimal(payload, "agents_active"),
   });
 }
 
@@ -1056,6 +1066,12 @@ function optionFields(options: object): Record<string, unknown> {
       pointerFrameSeq: "pointer_frame_seq",
       terminalId: "terminal_id",
       sourceSession: "source_session",
+      rootSession: "root_session",
+      startedAtMs: "started_at_ms",
+      tasksCompleted: "tasks_completed",
+      tasksTotal: "tasks_total",
+      jobsRunning: "jobs_running",
+      agentsActive: "agents_active",
       selectionBackground: "selection_background",
       selectionForeground: "selection_foreground",
       cursorStyle: "cursor_style",

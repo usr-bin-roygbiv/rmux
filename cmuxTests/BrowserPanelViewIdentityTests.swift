@@ -222,6 +222,63 @@ import WebKit
         )
     }
 
+    @Test func closeReleasesLoadedWebViewFromLocalInlineHostWhilePanelRemainsRetained() async {
+        let panel = BrowserPanel(workspaceId: UUID())
+        let originalWebView = panel.webView
+        let originalPresentationView = originalWebView.cmuxBrowserViewportPresentationView
+        let discardManager = panel.hiddenWebViewDiscardManager
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 500),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        let slot = WindowBrowserSlotView(frame: window.contentView?.bounds ?? .zero)
+        window.contentView?.addSubview(slot)
+        slot.addSubview(originalPresentationView)
+        slot.pinHostedWebView(originalWebView)
+        let loadProbe = BrowserPanelLoadProbe()
+        originalWebView.navigationDelegate = loadProbe
+        window.makeKeyAndOrderFront(nil)
+        originalWebView.loadHTMLString("<html><body>loaded</body></html>", baseURL: nil)
+        let didCompleteLoad = await waitForWebViewLoad(loadProbe)
+
+        defer {
+            window.orderOut(nil)
+            window.contentView = nil
+        }
+
+        #expect(didCompleteLoad)
+        #expect(loadProbe.error == nil)
+        #expect(discardManager.delegate === panel)
+        #expect(originalPresentationView.superview === slot)
+
+        panel.close()
+
+        #expect(discardManager.delegate == nil)
+        #expect(!discardManager.hasScheduledDiscard)
+        #expect(panel.webView !== originalWebView)
+        #expect(panel.webView.url == nil)
+        #expect(originalWebView.navigationDelegate == nil)
+        #expect(originalWebView.uiDelegate == nil)
+        #expect(originalPresentationView.superview == nil)
+        #expect(originalWebView.superview == nil)
+    }
+
+    private func waitForWebViewLoad(
+        _ probe: BrowserPanelLoadProbe,
+        timeout: TimeInterval = 5
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if probe.didComplete {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        } while Date() < deadline
+        return probe.didComplete
+    }
+
     private func waitForOmnibarField(
         panelID: UUID,
         in window: NSWindow,
@@ -279,6 +336,29 @@ private final class LayoutCountingBrowserHostView: NSView {
     override func layout() {
         layoutPassCount += 1
         super.layout()
+    }
+}
+
+private final class BrowserPanelLoadProbe: NSObject, WKNavigationDelegate {
+    private(set) var didComplete = false
+    private(set) var error: Error?
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        didComplete = true
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        self.error = error
+        didComplete = true
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        didFailProvisionalNavigation navigation: WKNavigation!,
+        withError error: Error
+    ) {
+        self.error = error
+        didComplete = true
     }
 }
 

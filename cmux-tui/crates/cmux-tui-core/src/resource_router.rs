@@ -1219,6 +1219,7 @@ fn create_notification(mux: &Mux, request: ParsedResourceRequest) -> Result<Valu
     let intent = json!({
         "notification_id": notification_id,
         "title": required_string(&request.fields, "title")?,
+        "subtitle": optional_string(&request.fields, "subtitle")?,
         "body": required_string(&request.fields, "body")?,
         "level": required_string(&request.fields, "level")?,
         "terminal_id": terminal_id,
@@ -1337,6 +1338,7 @@ fn execute_notification_effect(
             json!({}),
         )
     })?;
+    let subtitle = intent.get("subtitle").and_then(Value::as_str).map(str::to_string);
     let created_at_ms = intent.get("created_at_ms").and_then(Value::as_u64).ok_or_else(|| {
         ResourceError::operation_failed(
             "notification.create",
@@ -1348,6 +1350,7 @@ fn execute_notification_effect(
     mux.post_resource_notification(
         notification_id.clone(),
         title.to_string(),
+        subtitle.clone(),
         body.to_string(),
         level,
         surface,
@@ -1358,6 +1361,7 @@ fn execute_notification_effect(
         "id":notification_id,
         "session_id":session_id,
         "title":title,
+        "subtitle":subtitle,
         "body":body,
         "level":level.as_str(),
         "created_at_ms":created_at_ms.to_string(),

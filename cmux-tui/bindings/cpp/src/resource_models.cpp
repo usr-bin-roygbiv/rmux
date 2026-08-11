@@ -17,7 +17,7 @@ struct DecodeFailure {
 };
 
 [[noreturn]] void fail(std::string message) {
-    throw DecodeFailure(make_error(ErrorCode::decode, std::move(message)));
+    throw DecodeFailure{make_error(ErrorCode::decode, std::move(message))};
 }
 
 template <typename T, typename Function>
@@ -195,6 +195,17 @@ std::optional<std::string> required_nullable_string(
         return std::nullopt;
     }
     return string_value(value, context);
+}
+
+std::optional<std::uint64_t> required_nullable_decimal(
+    const Json::Object& object,
+    std::string_view name,
+    std::string_view context) {
+    const auto& value = field(object, name, context);
+    if (value.is_null()) {
+        return std::nullopt;
+    }
+    return decimal_value(value, context);
 }
 
 template <typename Id>
@@ -1218,6 +1229,7 @@ NotificationSnapshot parse_notification(const Json& value) {
             "id",
             "session_id",
             "title",
+            "subtitle",
             "body",
             "level",
             "terminal_id",
@@ -1229,6 +1241,7 @@ NotificationSnapshot parse_notification(const Json& value) {
             "id",
             "session_id",
             "title",
+            "subtitle",
             "body",
             "level",
             "created_at_ms",
@@ -1243,6 +1256,8 @@ NotificationSnapshot parse_notification(const Json& value) {
             "notification session_id"),
         string_value(
             field(object, "title", "notification"), "notification title"),
+        required_nullable_string(
+            object, "subtitle", "notification subtitle"),
         string_value(
             field(object, "body", "notification"), "notification body"),
         enum_value<NotificationLevel>(
@@ -1275,6 +1290,14 @@ AgentSnapshot parse_agent(const Json& value) {
             "source",
             "updated_at_ms",
             "source_session",
+            "root_session",
+            "label",
+            "detail",
+            "started_at_ms",
+            "tasks_completed",
+            "tasks_total",
+            "jobs_running",
+            "agents_active",
             "extra",
         },
         {
@@ -1285,6 +1308,14 @@ AgentSnapshot parse_agent(const Json& value) {
             "source",
             "updated_at_ms",
             "source_session",
+            "root_session",
+            "label",
+            "detail",
+            "started_at_ms",
+            "tasks_completed",
+            "tasks_total",
+            "jobs_running",
+            "agents_active",
         },
         "agent snapshot");
     return {
@@ -1300,6 +1331,7 @@ AgentSnapshot parse_agent(const Json& value) {
                 {"blocked", AgentState::blocked},
                 {"idle", AgentState::idle},
                 {"done", AgentState::done},
+                {"error", AgentState::error},
                 {"unknown", AgentState::unknown},
             },
             "agent state"),
@@ -1315,6 +1347,20 @@ AgentSnapshot parse_agent(const Json& value) {
             field(object, "updated_at_ms", "agent"), "agent updated_at_ms"),
         required_nullable_string(
             object, "source_session", "agent source_session"),
+        bool_value(
+            field(object, "root_session", "agent"), "agent root_session"),
+        required_nullable_string(object, "label", "agent label"),
+        required_nullable_string(object, "detail", "agent detail"),
+        required_nullable_decimal(
+            object, "started_at_ms", "agent started_at_ms"),
+        required_nullable_decimal(
+            object, "tasks_completed", "agent tasks_completed"),
+        required_nullable_decimal(
+            object, "tasks_total", "agent tasks_total"),
+        required_nullable_decimal(
+            object, "jobs_running", "agent jobs_running"),
+        required_nullable_decimal(
+            object, "agents_active", "agent agents_active"),
         extra_value(object, "agent snapshot"),
     };
 }

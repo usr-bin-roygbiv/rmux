@@ -12,6 +12,7 @@ import WebKit
 final class CmuxWebView: WKWebView {
     var browserViewportModel: BrowserViewportModel?
     var onBrowserViewportHierarchyChanged: (() -> Void)?
+    var onMagnificationDelta: ((CGFloat) -> Void)?
 
     // WebKit registers web-content edit commands on the view's `undoManager`;
     // owning one per web view keeps every page's undo stack scoped to this
@@ -253,6 +254,20 @@ final class CmuxWebView: WKWebView {
     override func viewDidMoveToSuperview() {
         super.viewDidMoveToSuperview()
         onBrowserViewportHierarchyChanged?()
+    }
+
+    @discardableResult
+    func handleMagnificationDelta(_ delta: CGFloat) -> Bool {
+        guard let onMagnificationDelta else { return false }
+        onMagnificationDelta(delta)
+        return true
+    }
+
+    override func magnify(with event: NSEvent) {
+        guard handleMagnificationDelta(event.magnification) else {
+            super.magnify(with: event)
+            return
+        }
     }
 
     private final class ContextMenuFallbackBox: NSObject {

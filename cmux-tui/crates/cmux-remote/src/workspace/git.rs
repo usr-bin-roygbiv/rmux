@@ -836,7 +836,7 @@ mod tests {
         std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o700)).unwrap();
         git(root.canonical_root(), &["config", "core.fsmonitor", hook.to_str().unwrap()]);
 
-        assert!(Command::new(&hook).status().unwrap().success());
+        assert!(Command::new("/bin/sh").arg(&hook).status().unwrap().success());
         assert!(marker.exists(), "positive control did not execute fsmonitor hook");
         std::fs::remove_file(&marker).unwrap();
 

@@ -65,6 +65,14 @@ def full_snapshot(*, blocked: bool) -> Dict[str, Any]:
         "source": "socket",
         "updated_at_ms": "1700000000000",
         "source_session": "codex-7",
+        "root_session": False,
+        "label": None,
+        "detail": None,
+        "started_at_ms": None,
+        "tasks_completed": None,
+        "tasks_total": None,
+        "jobs_running": None,
+        "agents_active": None,
     }
     return {
         "machine": {
@@ -362,6 +370,14 @@ class WatchdogTests(unittest.TestCase):
             source="socket",
             updated_at_ms="1700000000000",
             source_session="codex-7",
+            root_session=False,
+            label=None,
+            detail=None,
+            started_at_ms=None,
+            tasks_completed=None,
+            tasks_total=None,
+            jobs_running=None,
+            agents_active=None,
         )
 
         self.assertEqual(

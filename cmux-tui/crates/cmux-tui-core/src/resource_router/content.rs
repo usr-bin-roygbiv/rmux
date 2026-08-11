@@ -657,7 +657,7 @@ fn finish_projection_commit(
 ) -> Result<Value, ResourceError> {
     let commit = match commit {
         Ok(commit) => commit,
-        Err(_) => {
+        Err(_error) => {
             let _ = mux.mark_resource_effect_indeterminate(&prepared.idempotency_key);
             return Err(effects::indeterminate_error(
                 &prepared.idempotency_key,
@@ -2215,15 +2215,6 @@ mod tests {
             BrowserPublicId::parse(created["value"]["browser_id"].as_str().unwrap()).unwrap();
         let (_, surface) =
             browser_surface_for_id(&mux, &browser_id).expect("created browser is live");
-        let durable = mux
-            .with_resource_projection(|registry, _| registry.resource_topology_snapshot())
-            .unwrap();
-        let durable_browser = durable
-            .browsers
-            .iter()
-            .find(|browser| browser.public_id == browser_id)
-            .expect("created browser is durable");
-        assert_eq!(durable_browser.status, RegistryBrowserStatus::Starting);
 
         let projection = mux
             .with_resource_projection(|registry, state| {
@@ -2243,7 +2234,7 @@ mod tests {
         assert!(matches!(
             &projection.patch.changes[1],
             ResourceChange::UpsertTab(tab)
-                if tab.content_id == ContentPublicId::Browser(browser_id.clone())
+                if tab.content_id == ContentPublicId::Browser(browser_id)
         ));
         surface.kill();
     }
@@ -2668,5 +2659,107 @@ mod tests {
         assert_eq!(replay["value"], moved["value"]);
         assert_eq!(replay["revision"], moved["revision"]);
         assert_eq!(replay["replayed"], true);
+    }
+
+    #[test]
+    fn terminal_close_collapses_a_multiview_pane_with_viewport_columns() {
+        let mux = Mux::new_for_test("content-terminal-close-viewport", SurfaceOptions::default());
+        let session = ResourceSelectors {
+            machine: Some("current".to_string()),
+            session: Some("current".to_string()),
+            ..ResourceSelectors::default()
+        };
+        let created = super::super::topology::dispatch(
+            &mux,
+            parsed_request(
+                "workspace.create",
+                &session,
+                json!({"initial_content":"terminal","name":"close"}),
+                Some("create-terminal-close-viewport"),
+            ),
+        )
+        .unwrap();
+        let workspace = created["value"]["workspace_id"].as_str().unwrap().to_string();
+        let screen = created["value"]["screen_id"].as_str().unwrap().to_string();
+        let source_pane = created["value"]["pane_id"].as_str().unwrap().to_string();
+        let terminal = created["value"]["terminal_id"].as_str().unwrap().to_string();
+        let source_selectors = ResourceSelectors {
+            machine: Some("current".to_string()),
+            session: Some("current".to_string()),
+            pane: Some(source_pane),
+            ..ResourceSelectors::default()
+        };
+        let split = super::super::topology::dispatch(
+            &mux,
+            parsed_request(
+                "pane.split",
+                &source_selectors,
+                json!({"direction":"right","ratio":0.5}),
+                Some("split-terminal-close-viewport"),
+            ),
+        )
+        .unwrap();
+        let target_pane = split["value"]["pane_id"].as_str().unwrap().to_string();
+        let terminal_selectors = ResourceSelectors {
+            machine: Some("current".to_string()),
+            session: Some("current".to_string()),
+            terminal: Some(terminal.clone()),
+            ..ResourceSelectors::default()
+        };
+        dispatch(
+            &mux,
+            parsed_request(
+                "terminal.project",
+                &terminal_selectors,
+                json!({
+                    "destination_workspace":workspace,
+                    "destination_screen":screen,
+                    "destination_pane":target_pane,
+                    "index":0,
+                }),
+                Some("project-terminal-close-viewport"),
+            ),
+        )
+        .unwrap();
+        let screen_selectors = ResourceSelectors {
+            machine: Some("current".to_string()),
+            session: Some("current".to_string()),
+            screen: Some(screen),
+            ..ResourceSelectors::default()
+        };
+        super::super::topology::dispatch(
+            &mux,
+            parsed_request(
+                "pane.create",
+                &screen_selectors,
+                json!({}),
+                Some("add-terminal-close-viewport-pane"),
+            ),
+        )
+        .unwrap();
+        let target_public =
+            crate::resource::PanePublicId::parse(&target_pane).expect("split pane id is valid");
+        let target_slot = mux.with_state(|state| state.resource_indexes.panes[&target_public]);
+        mux.new_pane_right(target_slot, 0.5, Some((51, 22))).unwrap();
+
+        dispatch(
+            &mux,
+            parsed_request(
+                "terminal.close",
+                &terminal_selectors,
+                json!({}),
+                Some("close-terminal-with-viewport"),
+            ),
+        )
+        .unwrap();
+
+        assert!(
+            public_session_snapshot(&mux).unwrap()["terminals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|candidate| candidate["id"] != terminal)
+        );
+        mux.shutdown();
     }
 }

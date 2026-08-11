@@ -8,7 +8,7 @@ pub use model::{
 use cmux::{
     AgentId, AgentState, Client, Config, CreationState, Error, MutationOptions, NotificationLevel,
     NotificationOptions, RunCommand, RunOptions as CmuxRunOptions, Session, TerminalId,
-    TerminalSnapshot, TerminalWaitExitResult, Workspace,
+    TerminalSnapshot, TerminalWaitExitResult, Update, Workspace,
 };
 use std::collections::BTreeSet;
 use std::fmt;
@@ -237,6 +237,7 @@ fn notify_newly_blocked(
         session.create_notification(NotificationOptions {
             title: "Agent needs input".to_string(),
             body: format!("Agent {} is blocked.", transition.id),
+            subtitle: Update::Clear,
             level: Some(NotificationLevel::Warning),
             terminal_id: Some(terminal_id),
         })?;

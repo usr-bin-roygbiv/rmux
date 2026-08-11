@@ -2405,7 +2405,12 @@ mod tests {
         assert_eq!(daemon.state.lock().await.pending.len(), 1);
 
         tokio::time::advance(PENDING_LINK_TTL + Duration::from_secs(1)).await;
-        tokio::task::yield_now().await;
+        for _ in 0..16 {
+            if daemon.state.lock().await.pending.is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
 
         assert!(
             daemon.state.lock().await.pending.is_empty(),
@@ -2440,7 +2445,12 @@ mod tests {
         daemon.state.lock().await.pending.get_mut(&key).unwrap().expiry_task = Some(expiry_task);
 
         tokio::time::advance(PENDING_LINK_TTL + Duration::from_secs(1)).await;
-        tokio::task::yield_now().await;
+        for _ in 0..16 {
+            if daemon.state.lock().await.pending.is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
 
         assert!(daemon.state.lock().await.pending.is_empty());
         assert!(closed.load(Ordering::Acquire), "the expired route was removed without closing");

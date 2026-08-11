@@ -13,7 +13,7 @@ pub(crate) mod tree;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use cmux_tui_core::resource::ResourceOperation;
+use cmux_tui_core::resource::{ResourceOperation, TerminalPublicId};
 use cmux_tui_core::server::{
     CREATION_RECEIPTS_CAPABILITY, CREATION_SELECTOR_FALLBACKS_CAPABILITY,
     FRONTEND_JOURNAL_CAPABILITY, LAYOUT_UNDO_CAPABILITY, MAX_CREATION_SELECTOR_FALLBACKS,
@@ -21,17 +21,18 @@ use cmux_tui_core::server::{
     VIEWPORT_SPLITS_CAPABILITY,
 };
 use cmux_tui_core::{
-    BrowserFrameUpdate, BrowserStatus, ClearHistoryFailure, DefaultColors, GuardedMouseEncode,
-    LayoutRatioError, LayoutUndoError, LayoutUndoResult, Mux, MuxEventReceiver, PaneId,
-    PointerSemanticProbe, PointerSnapshotProbe, ResourceSelectors, ScreenId, SidebarPluginStatus,
-    SplitDir, SplitId, Surface, SurfaceId, SurfaceKind, SurfaceRenderFrame, SurfaceResizeReporter,
-    TerminalPointerSnapshot, ViewportWidthError, WorkspaceId, WorkspaceMutation, ZoomMode,
+    AgentRecord, BrowserFrameUpdate, BrowserStatus, ClearHistoryFailure, DefaultColors,
+    GuardedMouseEncode, LayoutRatioError, LayoutUndoError, LayoutUndoResult, Mux, MuxEventReceiver,
+    PaneId, PointerSemanticProbe, PointerSnapshotProbe, ResourceSelectors, ScreenId,
+    SidebarPluginStatus, SplitDir, SplitId, Surface, SurfaceId, SurfaceKind, SurfaceRenderFrame,
+    SurfaceResizeReporter, TerminalPointerSnapshot, ViewportWidthError, WorkspaceId,
+    WorkspaceMutation, ZoomMode,
 };
 use ghostty_vt::{
     KeyInput, MouseInput, RenderState, Scrollbar, Terminal, TerminalPointerSemanticSnapshot,
 };
 use serde::Deserialize;
-use serde_json::{Map, json};
+use serde_json::{Map, Value as JsonValue, json};
 
 pub use remote::{
     RemoteMessageReader, RemoteMessageWriter, RemoteSession, RemoteSurface, RemoteTransport,
@@ -123,11 +124,12 @@ pub(crate) fn is_remote_timeout(error: &anyhow::Error) -> bool {
         .is_some_and(remote::RemoteRequestError::is_timeout)
 }
 
-pub(crate) fn is_remote_surface_unavailable(error: &anyhow::Error, surface: SurfaceId) -> bool {
+pub(crate) fn is_surface_unavailable(error: &anyhow::Error, surface: SurfaceId) -> bool {
     let expected = format!("unknown surface {surface}");
-    error
-        .downcast_ref::<remote::RemoteRequestError>()
-        .is_some_and(|error| error.rejection_message() == Some(expected.as_str()))
+    error.to_string() == expected
+        || error
+            .downcast_ref::<remote::RemoteRequestError>()
+            .is_some_and(|error| error.rejection_message() == Some(expected.as_str()))
 }
 
 fn normalize_remote_layout_undo_error(error: anyhow::Error) -> anyhow::Error {
@@ -361,6 +363,20 @@ pub(crate) enum SurfaceAttach {
     Deferred,
     Missing,
 }
+fn decode_remote_agent_list(value: &JsonValue) -> anyhow::Result<Vec<AgentRecord>> {
+    let agents = value
+        .get("agents")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| anyhow::anyhow!("remote list-agents response omitted its agents array"))?;
+    agents
+        .iter()
+        .map(|value| {
+            remote::parse_agent_record(value).ok_or_else(|| {
+                anyhow::anyhow!("remote list-agents response contained a malformed agent")
+            })
+        })
+        .collect()
+}
 
 impl Session {
     pub(crate) fn allocate_layout_resize_owner(&self) -> u64 {
@@ -378,6 +394,16 @@ impl Session {
             Session::Remote(remote) => remote.request(json!({"cmd": "list-clients"}))?,
         };
         serde_json::from_value(value).map_err(Into::into)
+    }
+
+    pub fn agents(&self) -> anyhow::Result<Vec<AgentRecord>> {
+        match self {
+            Session::Local(mux) => Ok(mux.list_agents(None, None)),
+            Session::Remote(remote) => {
+                let value = remote.request(json!({"cmd": "list-agents"}))?;
+                decode_remote_agent_list(&value)
+            }
+        }
     }
 
     pub fn set_client_sizing(
@@ -653,7 +679,7 @@ impl Session {
         }
     }
 
-    pub fn agents(&self) -> Vec<AgentInfo> {
+    pub fn sidebar_agents(&self) -> Vec<AgentInfo> {
         match self {
             Session::Local(mux) => mux
                 .list_agents(None, None)
@@ -1526,6 +1552,14 @@ impl Session {
             }
             Session::Remote(remote) => {
                 remote.request(json!({"cmd": "close-surface", "surface": surface})).map(|_| ())
+            }
+        }
+    }
+    pub fn close_terminal(&self, terminal: &TerminalPublicId) -> anyhow::Result<()> {
+        match self {
+            Session::Local(mux) => mux.close_terminal_resource(terminal).map(|_| ()),
+            Session::Remote(remote) => {
+                remote.request(json!({"cmd": "close-terminal", "terminal": terminal})).map(|_| ())
             }
         }
     }
@@ -2626,12 +2660,13 @@ pub(crate) fn test_remote_session_with_blocked_attach_transport_failure(
 
 #[cfg(test)]
 mod tests {
-    use cmux_tui_core::{LayoutUndoError, Mux, SurfaceOptions};
+    use cmux_tui_core::{AgentState, LayoutUndoError, Mux, SurfaceOptions};
+    use serde_json::json;
 
     use super::{
-        Session, is_remote_surface_unavailable, normalize_remote_layout_undo_error, resize_action,
-        test_remote_rejected_error_with_code, test_remote_rejected_error_with_message,
-        test_remote_session_with_view_attachment_leases,
+        Session, decode_remote_agent_list, is_surface_unavailable,
+        normalize_remote_layout_undo_error, resize_action, test_remote_rejected_error_with_code,
+        test_remote_rejected_error_with_message, test_remote_session_with_view_attachment_leases,
         test_remote_surface_with_missing_attachment_lease, test_remote_transport_error,
     };
 
@@ -2670,16 +2705,96 @@ mod tests {
     }
 
     #[test]
-    fn remote_surface_unavailable_matches_only_the_requested_surface_rejection() {
-        assert!(is_remote_surface_unavailable(
+    fn remote_agent_lists_reject_missing_non_array_and_malformed_records() {
+        assert!(decode_remote_agent_list(&json!({})).is_err());
+        assert!(decode_remote_agent_list(&json!({"agents": {}})).is_err());
+        assert!(
+            decode_remote_agent_list(&json!({
+                "agents": [{
+                    "surface": 41,
+                    "terminal_id": "term_00000000000000000000000000000029",
+                    "state": "working",
+                    "source": "socket",
+                    "updated_at_ms": 1
+                }, {"surface": "bad"}]
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn remote_agent_lists_reject_invalid_optional_fields_and_unknown_states() {
+        let valid = json!({
+            "surface": 41,
+            "terminal_id": "term_00000000000000000000000000000029",
+            "state": "working",
+            "source": "socket",
+            "updated_at_ms": 1
+        });
+        for (field, invalid) in [
+            ("session", json!(7)),
+            ("label", json!(false)),
+            ("detail", json!([])),
+            ("started_at_ms", json!("now")),
+            ("tasks_completed", json!(-1)),
+            ("tasks_total", json!("five")),
+            ("jobs_running", json!({})),
+            ("agents_active", json!(1.5)),
+            ("updated_at_ms", json!("later")),
+            ("updated_at_ms", json!(null)),
+        ] {
+            let mut record = valid.clone();
+            record[field] = invalid;
+            assert!(
+                decode_remote_agent_list(&json!({"agents": [record]})).is_err(),
+                "{field} must reject the complete list"
+            );
+        }
+
+        let mut record = valid;
+        record["state"] = json!("broken");
+        assert!(decode_remote_agent_list(&json!({"agents": [record]})).is_err());
+    }
+
+    #[test]
+    fn remote_agent_lists_accept_explicit_unknown_and_nullable_optional_fields() {
+        let records = decode_remote_agent_list(&json!({
+            "agents": [{
+                "surface": 41,
+                "terminal_id": "term_00000000000000000000000000000029",
+                "state": "unknown",
+                "source": "socket",
+                "session": null,
+                "label": null,
+                "detail": null,
+                "started_at_ms": null,
+                "tasks_completed": null,
+                "tasks_total": null,
+                "jobs_running": null,
+                "agents_active": null,
+                "updated_at_ms": 1
+            }]
+        }))
+        .unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].state, AgentState::Unknown);
+        assert_eq!(records[0].session, None);
+        assert_eq!(records[0].telemetry, Default::default());
+    }
+
+    #[test]
+    fn surface_unavailable_matches_local_or_requested_remote_surface() {
+        assert!(is_surface_unavailable(&anyhow::anyhow!("unknown surface 77"), 77));
+        assert!(is_surface_unavailable(
             &test_remote_rejected_error_with_message("unknown surface 77"),
             77
         ));
-        assert!(!is_remote_surface_unavailable(
+        assert!(!is_surface_unavailable(
             &test_remote_rejected_error_with_message("unknown surface 78"),
             77
         ));
-        assert!(!is_remote_surface_unavailable(&test_remote_transport_error(), 77));
+        assert!(!is_surface_unavailable(&test_remote_transport_error(), 77));
     }
 
     #[test]

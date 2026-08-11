@@ -69,6 +69,21 @@ impl HeadlessServer {
         }
         panic!("headless server did not create socket at {}", self.socket.display());
     }
+    fn restart(&mut self) {
+        self.child.kill().unwrap();
+        self.child.wait().unwrap();
+        let _ = fs::remove_file(&self.socket);
+        self.child = Command::new(bin())
+            .args(["--headless", "--socket"])
+            .arg(&self.socket)
+            .arg("--state")
+            .arg(&self.state)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        self.wait_for_socket();
+    }
 
     fn close_all_resources(&self) -> Result<(), String> {
         let host_root =
@@ -279,25 +294,61 @@ fn terminal_host_pids(root: &std::path::Path) -> Vec<u32> {
         .collect()
 }
 
+#[cfg(target_os = "linux")]
+fn linux_process_state_and_group(pid: u32) -> Option<(char, u32)> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (_, fields) = stat.rsplit_once(") ")?;
+    let mut fields = fields.split_whitespace();
+    let state = fields.next()?.chars().next()?;
+    let _parent = fields.next()?;
+    let group = fields.next()?.parse().ok()?;
+    Some((state, group))
+}
+
 #[cfg(unix)]
 fn process_exists(pid: u32) -> bool {
-    let Ok(pid) = libc::pid_t::try_from(pid) else { return false };
+    let Ok(raw_pid) = libc::pid_t::try_from(pid) else { return false };
     // SAFETY: signal zero performs only an existence/permission check.
-    if unsafe { libc::kill(pid, 0) == 0 } {
-        return true;
+    let signal_succeeded = unsafe { libc::kill(raw_pid, 0) == 0 };
+    let visible =
+        signal_succeeded || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+    if !visible {
+        return false;
     }
-    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    #[cfg(target_os = "linux")]
+    {
+        linux_process_state_and_group(pid).is_some_and(|(state, _)| state != 'Z')
+    }
+    #[cfg(not(target_os = "linux"))]
+    true
 }
 
 #[cfg(unix)]
 fn process_group_exists(pid: u32) -> bool {
-    let Ok(pid) = libc::pid_t::try_from(pid) else { return false };
+    let Ok(raw_pid) = libc::pid_t::try_from(pid) else { return false };
     // SAFETY: a negative PID with signal zero checks the process group and
     // cannot deliver a signal.
-    if unsafe { libc::kill(-pid, 0) == 0 } {
-        return true;
+    let signal_succeeded = unsafe { libc::kill(-raw_pid, 0) == 0 };
+    let visible =
+        signal_succeeded || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+    if !visible {
+        return false;
     }
-    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(processes) = fs::read_dir("/proc") else { return true };
+        processes.filter_map(Result::ok).any(|entry| {
+            let Some(candidate) =
+                entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok())
+            else {
+                return false;
+            };
+            linux_process_state_and_group(candidate)
+                .is_some_and(|(state, group)| group == pid && state != 'Z')
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    true
 }
 
 #[cfg(not(unix))]
@@ -3081,10 +3132,7 @@ fn noun_first_cli_covers_resources_output_errors_and_private_raw_escape() {
 
     let identify = raw_cli(&server, serde_json::json!({"id":"identify-human","cmd":"identify"}));
     assert_success(&identify);
-    assert!(
-        String::from_utf8_lossy(&identify.stdout)
-            .contains(&format!("\"protocol\":{}", cmux_tui_core::server::PROTOCOL_VERSION))
-    );
+    assert!(String::from_utf8_lossy(&identify.stdout).contains("\"protocol\":12"));
 
     let identify_json =
         raw_cli(&server, serde_json::json!({"id":"identify-json","cmd":"identify"}));
@@ -3426,6 +3474,7 @@ fn noun_first_cli_covers_resources_output_errors_and_private_raw_escape() {
             "idle",
             "--source",
             "socket",
+            "--root-session",
             "--source-session",
             "cli",
         ],
@@ -3435,6 +3484,7 @@ fn noun_first_cli_covers_resources_output_errors_and_private_raw_escape() {
     assert_success(&agents);
     let agents = json_output(&agents);
     assert_eq!(agents[0]["state"].as_str(), Some("idle"));
+    assert_eq!(agents[0]["root_session"].as_bool(), Some(true));
 
     let send_key = cli(&server, &["--quiet", "terminal", &terminal, "keys", "enter"]);
     if !send_key.status.success() {
@@ -3451,37 +3501,13 @@ fn noun_first_cli_covers_resources_output_errors_and_private_raw_escape() {
     let select_bare = cli(&server, &["tab"]);
     assert_eq!(select_bare.status.code(), Some(2));
 
-    // Keep terminal.close focused on its CLI contract; multiview close semantics have dedicated
-    // core coverage.
-    let close_projection = json_cli(&server, &["tab", projected_tab, "close"]);
-    assert_success(&close_projection);
-    let remaining_terminal = json_cli(&server, &["terminal", &terminal, "screen", "read"]);
-    assert_success(&remaining_terminal);
-
-    let mut terminal_closed = false;
-    for attempt in 0..3 {
-        let key = format!("matrix-terminal-close-{attempt}");
-        let close = json_cli(&server, &["terminal", &terminal, "close", "--idempotency-key", &key]);
-        if !close.status.success() {
-            assert_eq!(close.status.code(), Some(1));
-            let error = json_error(&close);
-            assert_eq!(error["code"], "mutation.indeterminate");
-            assert_eq!(error["details"]["idempotency_key"], key);
-            assert_eq!(error["details"]["operation"], "terminal.close");
-            assert_eq!(error["details"]["recovery"], "inspect_state_then_retry_with_new_key");
-        }
-
-        let read = json_cli(&server, &["terminal", &terminal, "screen", "read"]);
-        if !read.status.success() {
-            assert_eq!(read.status.code(), Some(1));
-            assert_eq!(json_error(&read)["code"], "selector.not_found");
-            terminal_closed = true;
-            break;
-        }
-        assert_success(&read);
-        assert!(!close.status.success(), "successful close left the terminal addressable");
+    let close = json_cli(&server, &["terminal", &terminal, "close"]);
+    if !close.status.success() {
+        let error = json_error(&close);
+        assert_eq!(error["code"], "mutation.indeterminate", "{error}");
+        assert_eq!(error["details"]["operation"], "terminal.close", "{error}");
     }
-    assert!(terminal_closed, "terminal remained addressable after three inspected close attempts");
+    wait_for_terminal_not_found(&server, &terminal);
 
     let bogus = Command::new(bin())
         .args(["--json", "--socket"])
@@ -3493,6 +3519,166 @@ fn noun_first_cli_covers_resources_output_errors_and_private_raw_escape() {
     assert_eq!(bogus.status.code(), Some(3));
 
     assert_subscribe_reports_tree_changed(&server);
+}
+
+#[test]
+fn notification_and_agent_resources_follow_terminal_across_workspace_reorder_and_restart() {
+    let mut server = HeadlessServer::start("notification-agent-order");
+    let create_workspace = |server: &HeadlessServer, name: &str| {
+        let output = json_cli(server, &["workspace", "create", "--name", name]);
+        assert_success(&output);
+        let value = json_output(&output);
+        (
+            value["value"]["workspace_id"].as_str().unwrap().to_string(),
+            value["value"]["terminal_id"].as_str().unwrap().to_string(),
+        )
+    };
+    let (target_workspace, target_terminal) = create_workspace(&server, "target");
+    let (middle_workspace, middle_terminal) = create_workspace(&server, "middle");
+    let (last_workspace, last_terminal) = create_workspace(&server, "last");
+
+    let notification_specs = [
+        ("Information", None, "info"),
+        ("Warning", Some("Needs attention"), "warning"),
+        ("Failure", Some("Build failed"), "error"),
+    ];
+    for (title, subtitle, level) in notification_specs {
+        let mut args = vec![
+            "notification".to_string(),
+            "create".to_string(),
+            "--title".to_string(),
+            title.to_string(),
+            "--body".to_string(),
+            format!("{title} body"),
+            "--level".to_string(),
+            level.to_string(),
+            "--terminal".to_string(),
+            target_terminal.clone(),
+        ];
+        if let Some(subtitle) = subtitle {
+            args.extend(["--subtitle".to_string(), subtitle.to_string()]);
+        }
+        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+        let output = json_cli(&server, &args);
+        assert_success(&output);
+        assert_eq!(json_output(&output)["value"]["level"], level);
+    }
+
+    for state in ["working", "blocked", "idle", "done", "error", "unknown"] {
+        let output = json_cli(
+            &server,
+            &[
+                "agent",
+                "report",
+                "--terminal",
+                &target_terminal,
+                "--state",
+                state,
+                "--source",
+                "socket",
+                "--source-session",
+                "ordering-probe",
+                "--root-session",
+                "--label",
+                "coordinator",
+                "--detail",
+                "workspace ordering",
+                "--started-at-ms",
+                "1700000000000",
+                "--tasks-completed",
+                "3",
+                "--tasks-total",
+                "5",
+                "--jobs-running",
+                "1",
+                "--agents-active",
+                "2",
+            ],
+        );
+        assert_success(&output);
+        let listed =
+            json_cli(&server, &["agent", "list", "--terminal", &target_terminal, "--state", state]);
+        assert_success(&listed);
+        let listed = json_output(&listed);
+        assert_eq!(listed.as_array().unwrap().len(), 1, "missing {state} transition");
+        assert_eq!(listed[0]["state"], state);
+    }
+
+    let moved = json_cli(&server, &["workspace", &target_workspace, "move", "--index", "2"]);
+    assert_success(&moved);
+    let workspaces = json_cli(&server, &["workspace", "list"]);
+    assert_success(&workspaces);
+    let order = json_output(&workspaces)
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|workspace| workspace["id"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(order, [middle_workspace, last_workspace, target_workspace]);
+
+    let assert_auxiliary_resources = |server: &HeadlessServer| {
+        let notifications = json_cli(server, &["notification", "list", "--limit", "10"]);
+        assert_success(&notifications);
+        let notifications = json_output(&notifications);
+        let notifications = notifications.as_array().unwrap();
+        assert_eq!(notifications.len(), 3);
+        assert_eq!(
+            notifications
+                .iter()
+                .map(|notification| notification["level"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["error", "warning", "info"]
+        );
+        assert_eq!(notifications[0]["subtitle"], "Build failed");
+        assert_eq!(notifications[1]["subtitle"], "Needs attention");
+        assert!(notifications[2]["subtitle"].is_null());
+        assert!(
+            notifications.iter().all(|notification| notification["terminal_id"] == target_terminal)
+        );
+
+        let agents = json_cli(server, &["agent", "list", "--terminal", &target_terminal]);
+        assert_success(&agents);
+        let agents = json_output(&agents);
+        assert_eq!(agents.as_array().unwrap().len(), 1);
+        assert_eq!(agents[0]["state"], "unknown");
+        assert_eq!(agents[0]["source"], "socket");
+        assert_eq!(agents[0]["source_session"], "ordering-probe");
+        assert_eq!(agents[0]["root_session"], true);
+        assert_eq!(agents[0]["label"], "coordinator");
+        assert_eq!(agents[0]["detail"], "workspace ordering");
+        assert_eq!(agents[0]["started_at_ms"], "1700000000000");
+        assert_eq!(agents[0]["tasks_completed"], "3");
+        assert_eq!(agents[0]["tasks_total"], "5");
+        assert_eq!(agents[0]["jobs_running"], "1");
+        assert_eq!(agents[0]["agents_active"], "2");
+    };
+    assert_auxiliary_resources(&server);
+    let recovery_markers = [
+        (&target_terminal, format!("notification_order_target_{}", std::process::id())),
+        (&middle_terminal, format!("notification_order_middle_{}", std::process::id())),
+        (&last_terminal, format!("notification_order_last_{}", std::process::id())),
+    ];
+    for (terminal, marker) in &recovery_markers {
+        let text = format!("echo {marker}\r");
+        let output = cli(&server, &["--quiet", "terminal", terminal, "write", "--text", &text]);
+        assert_success(&output);
+        assert!(wait_for_screen(&server, terminal, marker).contains(marker));
+    }
+
+    server.restart();
+    for (terminal, marker) in &recovery_markers {
+        assert!(wait_for_recovered_screen(&server, terminal, marker).contains(marker));
+    }
+    let recovered = json_cli(&server, &["workspace", "list"]);
+    assert_success(&recovered);
+    let recovered_order = json_output(&recovered)
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|workspace| workspace["id"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(recovered_order, order);
+    assert_auxiliary_resources(&server);
 }
 
 #[test]
@@ -3814,6 +4000,61 @@ fn wait_for_screen(server: &HeadlessServer, terminal: &str, marker: &str) -> Str
     last
 }
 
+fn wait_for_terminal_not_found(server: &HeadlessServer, terminal: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut attempt = 0;
+    let mut last = None;
+    let mut last_close_error = None;
+    while Instant::now() < deadline {
+        let output = json_cli(server, &["terminal", terminal, "screen", "read"]);
+        if !output.status.success() {
+            assert_eq!(output.status.code(), Some(1));
+            assert_eq!(json_error(&output)["code"], "selector.not_found");
+            return;
+        }
+        last = Some(json_output(&output));
+
+        let idempotency_key = format!("cli-terminal-close-{}-{attempt}", std::process::id());
+        let close = json_cli(
+            server,
+            &["terminal", terminal, "close", "--idempotency-key", &idempotency_key],
+        );
+        if !close.status.success() {
+            let error = json_error(&close);
+            if error["code"] == "selector.not_found" {
+                return;
+            }
+            assert_eq!(error["code"], "mutation.indeterminate", "{error}");
+            assert_eq!(error["details"]["operation"], "terminal.close", "{error}");
+            last_close_error = Some(error);
+        }
+
+        attempt += 1;
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!(
+        "terminal {terminal} remained readable after close; last response: {last:?}; last close error: {last_close_error:?}"
+    );
+}
+
+fn wait_for_recovered_screen(server: &HeadlessServer, terminal: &str, marker: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut last = String::new();
+    while Instant::now() < deadline {
+        let output = json_cli(server, &["terminal", terminal, "screen", "read"]);
+        if output.status.success() {
+            last = json_output(&output)["text"].as_str().unwrap().to_string();
+            if last.contains(marker) {
+                return last;
+            }
+        } else {
+            last = String::from_utf8_lossy(&output.stderr).into_owned();
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("terminal {terminal} did not recover marker {marker:?}; last response: {last}");
+}
+
 fn plugin_cli(data_home: &PathBuf, config_path: &PathBuf, args: &[&str]) -> Output {
     Command::new(bin())
         .args(args)
@@ -3973,6 +4214,7 @@ fn create_live_terminal_host_record(root: &std::path::Path) -> fs::File {
         supports_set_defaults: true,
         supports_clear_history: true,
         supports_terminate_ack: false,
+        supports_terminate_only: false,
     };
     let record_path = record.record_path(root);
     let live_path = record_path.with_extension(format!("{incarnation}-{host_start_nonce}.live"));

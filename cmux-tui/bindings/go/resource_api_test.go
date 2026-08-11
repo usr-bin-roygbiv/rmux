@@ -25,6 +25,7 @@ const (
 	testPaneID      = PaneID("pane_00000000000000000000000000000005")
 	testTabID       = TabID("tab_00000000000000000000000000000006")
 	testTerminalID  = TerminalID("term_00000000000000000000000000000007")
+	testNotificationID = NotificationID("notification_0000000000000000000000000000000a")
 	testAgentID     = AgentID("agent_00000000000000000000000000000008")
 	testBrowserID   = BrowserID("browser_00000000000000000000000000000009")
 )
@@ -414,6 +415,97 @@ func TestCatalogResultsDecodeStrictly(t *testing.T) {
 	); !errors.Is(err, ErrProtocol) {
 		t.Fatalf("unknown nested layout field error = %T %v", err, err)
 	}
+
+	notificationJSON := map[string]any{
+		"id":            testNotificationID,
+		"session_id":    testSessionID,
+		"title":         "build finished",
+		"subtitle":      nil,
+		"body":          "all checks passed",
+		"level":         "info",
+		"created_at_ms": "22",
+		"unread":        true,
+	}
+	notificationRaw, err := json.Marshal(notificationJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notification, err := decodeValue[NotificationSnapshot](
+		notificationRaw,
+		"notification snapshot",
+	)
+	if err != nil || notification.Subtitle != nil {
+		t.Fatalf("notification snapshot = %#v, %v", notification, err)
+	}
+	delete(notificationJSON, "subtitle")
+	notificationRaw, err = json.Marshal(notificationJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodeValue[NotificationSnapshot](
+		notificationRaw,
+		"notification snapshot",
+	); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("missing notification subtitle error = %T %v", err, err)
+	}
+
+	agentJSON := map[string]any{
+		"id":              testAgentID,
+		"session_id":      testSessionID,
+		"terminal_id":     testTerminalID,
+		"state":           AgentStateError,
+		"source":          AgentSourceDetected,
+		"updated_at_ms":   "23",
+		"source_session":  nil,
+		"root_session":    true,
+		"label":           nil,
+		"detail":          "index unavailable",
+		"started_at_ms":   "24",
+		"tasks_completed": nil,
+		"tasks_total":     "8",
+		"jobs_running":    nil,
+		"agents_active":   "2",
+	}
+	agentRaw, err := json.Marshal(agentJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := decodeValue[AgentSnapshot](agentRaw, "agent snapshot")
+	if err != nil || agent.State != AgentStateError ||
+		agent.Source != AgentSourceDetected || !agent.RootSession ||
+		agent.Label != nil || agent.Detail == nil ||
+		*agent.Detail != "index unavailable" || agent.StartedAtMS == nil ||
+		agent.StartedAtMS.Uint64() != 24 || agent.TasksCompleted != nil ||
+		agent.TasksTotal == nil || agent.TasksTotal.Uint64() != 8 ||
+		agent.JobsRunning != nil || agent.AgentsActive == nil ||
+		agent.AgentsActive.Uint64() != 2 {
+		t.Fatalf("agent snapshot = %#v, %v", agent, err)
+	}
+	for _, field := range []string{
+		"root_session",
+		"label",
+		"detail",
+		"started_at_ms",
+		"tasks_completed",
+		"tasks_total",
+		"jobs_running",
+		"agents_active",
+	} {
+		value := agentJSON[field]
+		delete(agentJSON, field)
+		agentRaw, err = json.Marshal(agentJSON)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := decodeValue[AgentSnapshot](
+			agentRaw,
+			"agent snapshot",
+		); !errors.Is(err, ErrProtocol) {
+			t.Fatalf("missing agent %s error = %T %v", field, err, err)
+		}
+		agentJSON[field] = value
+	}
+
 
 	creation, err := decodeValue[CreationResolution](
 		json.RawMessage(
@@ -1055,6 +1147,36 @@ func TestTerminalWaitUncertainSendClosesWithoutCancel(t *testing.T) {
 	}
 }
 
+func TestSessionCreateNotificationEncodesExplicitNullSubtitle(t *testing.T) {
+	client, requests := pipeClient(t, nil, 1)
+	defer client.Close(context.Background()) //nolint:errcheck
+
+	result, err := client.Session(SelectID(testSessionID)).CreateNotification(
+		context.Background(),
+		NotificationCreateOptions{
+			Title:    "build finished",
+			Subtitle: NullString(),
+			Body:     "all checks passed",
+		},
+	)
+	if err != nil {
+		t.Fatalf("create notification: %v", err)
+	}
+	if result.Value.Snapshot().ID != testNotificationID ||
+		result.Value.Snapshot().Subtitle != nil {
+		t.Fatalf("notification mutation result = %#v", result)
+	}
+
+	request := <-requests
+	if request["operation"] != "notification.create" {
+		t.Fatalf("notification create operation = %#v", request["operation"])
+	}
+	params := requestParams(t, request)
+	if value, exists := params["subtitle"]; !exists || value != nil {
+		t.Fatalf("notification subtitle = %#v, present = %t", value, exists)
+	}
+}
+
 func TestSessionReportAgentUsesOnlySessionRoute(t *testing.T) {
 	client, requests := pipeClient(t, nil, 1)
 	defer client.Close(context.Background()) //nolint:errcheck
@@ -1074,14 +1196,28 @@ func TestSessionReportAgentUsesOnlySessionRoute(t *testing.T) {
 			State:         AgentStateWorking,
 			Source:        AgentReportSourceSocket,
 			SourceSession: &sourceSession,
+			RootSession:   OptionalBool(true),
+			Label:         ValueString("worker"),
+			Detail:        NullString(),
+			StartedAtMS:   ValueDecimal(100),
+			TasksCompleted: ValueDecimal(3),
+			TasksTotal:     ValueDecimal(8),
+			JobsRunning:    NullDecimal(),
+			AgentsActive:   ValueDecimal(2),
 		},
 	)
 	if err != nil {
 		t.Fatalf("report agent: %v", err)
 	}
-	if result.Value.Snapshot().ID != testAgentID ||
-		result.Value.Snapshot().State != AgentStateWorking ||
-		result.Revision.Uint64() != 13 {
+	snapshot := result.Value.Snapshot()
+	if snapshot.ID != testAgentID || snapshot.State != AgentStateWorking ||
+		!snapshot.RootSession || snapshot.Label == nil ||
+		*snapshot.Label != "worker" || snapshot.Detail != nil ||
+		snapshot.StartedAtMS == nil || snapshot.StartedAtMS.Uint64() != 100 ||
+		snapshot.TasksCompleted == nil || snapshot.TasksCompleted.Uint64() != 3 ||
+		snapshot.TasksTotal == nil || snapshot.TasksTotal.Uint64() != 8 ||
+		snapshot.JobsRunning != nil || snapshot.AgentsActive == nil ||
+		snapshot.AgentsActive.Uint64() != 2 || result.Revision.Uint64() != 13 {
 		t.Fatalf("agent mutation result = %#v", result)
 	}
 
@@ -1098,11 +1234,24 @@ func TestSessionReportAgentUsesOnlySessionRoute(t *testing.T) {
 	requireParam(t, request, "state", string(AgentStateWorking))
 	requireParam(t, request, "source", string(AgentReportSourceSocket))
 	requireParam(t, request, "source_session", sourceSession)
+	requireParam(t, request, "root_session", true)
+	requireParam(t, request, "label", "worker")
+	requireParam(t, request, "started_at_ms", "100")
+	requireParam(t, request, "tasks_completed", "3")
+	requireParam(t, request, "tasks_total", "8")
+	requireParam(t, request, "agents_active", "2")
 	requireParam(t, request, "expected_revision", "12")
-	if _, exists := requestParams(t, request)["agent"]; exists {
+	params := requestParams(t, request)
+	for _, field := range []string{"detail", "jobs_running"} {
+		if value, exists := params[field]; !exists || value != nil {
+			t.Fatalf("agent %s = %#v, present = %t", field, value, exists)
+		}
+	}
+	if _, exists := params["agent"]; exists {
 		t.Fatalf("session agent report included an agent selector: %#v", request)
 	}
 }
+
 
 func TestKnownResourceChangesAreTypedAndNeverDowngradeToUnknown(t *testing.T) {
 	machine := map[string]any{
@@ -4436,19 +4585,43 @@ func pipeClient(
 					"exited_at": "10",
 					"revision":  "11",
 				}
+			case "notification.create":
+				result = map[string]any{
+					"generation": "g",
+					"revision":   "12",
+					"replayed":   false,
+					"value": map[string]any{
+						"id":            testNotificationID,
+						"session_id":    testSessionID,
+						"title":         "build finished",
+						"subtitle":      nil,
+						"body":          "all checks passed",
+						"level":         "info",
+						"created_at_ms": "12",
+						"unread":        true,
+					},
+				}
 			case "agent.report":
 				result = map[string]any{
 					"generation": "g",
 					"revision":   "13",
 					"replayed":   false,
 					"value": map[string]any{
-						"id":             testAgentID,
-						"session_id":     testSessionID,
-						"terminal_id":    testTerminalID,
-						"state":          AgentStateWorking,
-						"source":         AgentSourceSocket,
-						"updated_at_ms":  "14",
-						"source_session": "codex-task-42",
+						"id":              testAgentID,
+						"session_id":      testSessionID,
+						"terminal_id":     testTerminalID,
+						"state":           AgentStateWorking,
+						"source":          AgentSourceSocket,
+						"updated_at_ms":   "14",
+						"source_session":  "codex-task-42",
+						"root_session":    true,
+						"label":           "worker",
+						"detail":          nil,
+						"started_at_ms":   "100",
+						"tasks_completed": "3",
+						"tasks_total":     "8",
+						"jobs_running":    nil,
+						"agents_active":   "2",
 					},
 				}
 			case "terminal.project":

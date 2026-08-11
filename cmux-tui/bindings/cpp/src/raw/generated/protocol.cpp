@@ -9,6 +9,31 @@ namespace cmux::raw {
 Result<Json> Codec<AgentRecord>::encode(const AgentRecord& value) {
     (void)value;
     Json::Object object;
+    if (!value.agents_active.is_absent()) {
+        auto encoded = encode_value(value.agents_active);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("agents_active", std::move(encoded).value());
+    }
+    if (!value.detail.is_absent()) {
+        auto encoded = encode_value(value.detail);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("detail", std::move(encoded).value());
+    }
+    if (!value.jobs_running.is_absent()) {
+        auto encoded = encode_value(value.jobs_running);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("jobs_running", std::move(encoded).value());
+    }
+    if (!value.label.is_absent()) {
+        auto encoded = encode_value(value.label);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("label", std::move(encoded).value());
+    }
+    if (value.root_session) {
+        auto encoded = encode_value(*value.root_session);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("root_session", std::move(encoded).value());
+    }
     if (value.session) {
         auto encoded = encode_value(*value.session);
         if (!encoded) return std::move(encoded).error();
@@ -19,12 +44,27 @@ Result<Json> Codec<AgentRecord>::encode(const AgentRecord& value) {
     auto encoded_source = encode_value(value.source);
     if (!encoded_source) return std::move(encoded_source).error();
     object.emplace("source", std::move(encoded_source).value());
+    if (!value.started_at_ms.is_absent()) {
+        auto encoded = encode_value(value.started_at_ms);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("started_at_ms", std::move(encoded).value());
+    }
     auto encoded_state = encode_value(value.state);
     if (!encoded_state) return std::move(encoded_state).error();
     object.emplace("state", std::move(encoded_state).value());
     auto encoded_surface = encode_value(value.surface);
     if (!encoded_surface) return std::move(encoded_surface).error();
     object.emplace("surface", std::move(encoded_surface).value());
+    if (!value.tasks_completed.is_absent()) {
+        auto encoded = encode_value(value.tasks_completed);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("tasks_completed", std::move(encoded).value());
+    }
+    if (!value.tasks_total.is_absent()) {
+        auto encoded = encode_value(value.tasks_total);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("tasks_total", std::move(encoded).value());
+    }
     auto encoded_updated_at_ms = encode_value(value.updated_at_ms);
     if (!encoded_updated_at_ms) return std::move(encoded_updated_at_ms).error();
     object.emplace("updated_at_ms", std::move(encoded_updated_at_ms).value());
@@ -35,6 +75,52 @@ Result<AgentRecord> Codec<AgentRecord>::decode(const Json& value) {
     auto source = value.as_object();
     if (!source) return std::move(source).error();
     AgentRecord result{};
+    const Json* field_agents_active = value.find("agents_active");
+    if (field_agents_active) {
+        if (field_agents_active->is_null()) {
+            result.agents_active = Field<std::uint64_t>::null();
+        } else {
+            auto decoded = decode_value<std::uint64_t>(*field_agents_active);
+            if (!decoded) return std::move(decoded).error();
+            result.agents_active = Field<std::uint64_t>(std::move(decoded).value());
+        }
+    }
+    const Json* field_detail = value.find("detail");
+    if (field_detail) {
+        if (field_detail->is_null()) {
+            result.detail = Field<std::string>::null();
+        } else {
+            auto decoded = decode_value<std::string>(*field_detail);
+            if (!decoded) return std::move(decoded).error();
+            result.detail = Field<std::string>(std::move(decoded).value());
+        }
+    }
+    const Json* field_jobs_running = value.find("jobs_running");
+    if (field_jobs_running) {
+        if (field_jobs_running->is_null()) {
+            result.jobs_running = Field<std::uint64_t>::null();
+        } else {
+            auto decoded = decode_value<std::uint64_t>(*field_jobs_running);
+            if (!decoded) return std::move(decoded).error();
+            result.jobs_running = Field<std::uint64_t>(std::move(decoded).value());
+        }
+    }
+    const Json* field_label = value.find("label");
+    if (field_label) {
+        if (field_label->is_null()) {
+            result.label = Field<std::string>::null();
+        } else {
+            auto decoded = decode_value<std::string>(*field_label);
+            if (!decoded) return std::move(decoded).error();
+            result.label = Field<std::string>(std::move(decoded).value());
+        }
+    }
+    const Json* field_root_session = value.find("root_session");
+    if (field_root_session) {
+        auto decoded = decode_value<bool>(*field_root_session);
+        if (!decoded) return std::move(decoded).error();
+        result.root_session = std::move(decoded).value();
+    }
     const Json* field_session = value.find("session");
     if (!field_session) {
         return make_error(ErrorCode::decode, "missing required field 'session'");
@@ -57,6 +143,16 @@ Result<AgentRecord> Codec<AgentRecord>::decode(const Json& value) {
         if (!decoded) return std::move(decoded).error();
         result.source = std::move(decoded).value();
     }
+    const Json* field_started_at_ms = value.find("started_at_ms");
+    if (field_started_at_ms) {
+        if (field_started_at_ms->is_null()) {
+            result.started_at_ms = Field<std::uint64_t>::null();
+        } else {
+            auto decoded = decode_value<std::uint64_t>(*field_started_at_ms);
+            if (!decoded) return std::move(decoded).error();
+            result.started_at_ms = Field<std::uint64_t>(std::move(decoded).value());
+        }
+    }
     const Json* field_state = value.find("state");
     if (!field_state) {
         return make_error(ErrorCode::decode, "missing required field 'state'");
@@ -74,6 +170,26 @@ Result<AgentRecord> Codec<AgentRecord>::decode(const Json& value) {
         auto decoded = decode_value<Id>(*field_surface);
         if (!decoded) return std::move(decoded).error();
         result.surface = std::move(decoded).value();
+    }
+    const Json* field_tasks_completed = value.find("tasks_completed");
+    if (field_tasks_completed) {
+        if (field_tasks_completed->is_null()) {
+            result.tasks_completed = Field<std::uint64_t>::null();
+        } else {
+            auto decoded = decode_value<std::uint64_t>(*field_tasks_completed);
+            if (!decoded) return std::move(decoded).error();
+            result.tasks_completed = Field<std::uint64_t>(std::move(decoded).value());
+        }
+    }
+    const Json* field_tasks_total = value.find("tasks_total");
+    if (field_tasks_total) {
+        if (field_tasks_total->is_null()) {
+            result.tasks_total = Field<std::uint64_t>::null();
+        } else {
+            auto decoded = decode_value<std::uint64_t>(*field_tasks_total);
+            if (!decoded) return std::move(decoded).error();
+            result.tasks_total = Field<std::uint64_t>(std::move(decoded).value());
+        }
     }
     const Json* field_updated_at_ms = value.find("updated_at_ms");
     if (!field_updated_at_ms) {
@@ -123,6 +239,7 @@ Result<Json> Codec<AgentState>::encode(const AgentState& value) {
         case AgentState::blocked: return Json(std::string("blocked"));
         case AgentState::idle: return Json(std::string("idle"));
         case AgentState::done: return Json(std::string("done"));
+        case AgentState::error: return Json(std::string("error"));
         case AgentState::unknown: return Json(std::string("unknown"));
     }
     return make_error(ErrorCode::invalid_argument, "invalid enum value");
@@ -133,6 +250,7 @@ Result<AgentState> Codec<AgentState>::decode(const Json& value) {
     if (value == Json(std::string("blocked"))) return AgentState::blocked;
     if (value == Json(std::string("idle"))) return AgentState::idle;
     if (value == Json(std::string("done"))) return AgentState::done;
+    if (value == Json(std::string("error"))) return AgentState::error;
     if (value == Json(std::string("unknown"))) return AgentState::unknown;
     return make_error(ErrorCode::decode, "unknown AgentState value");
 }
@@ -3711,6 +3829,31 @@ Result<RenderUnderline> Codec<RenderUnderline>::decode(const Json& value) {
 Result<Json> Codec<ReportAgentResult>::encode(const ReportAgentResult& value) {
     (void)value;
     Json::Object object;
+    if (!value.agents_active.is_absent()) {
+        auto encoded = encode_value(value.agents_active);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("agents_active", std::move(encoded).value());
+    }
+    if (!value.detail.is_absent()) {
+        auto encoded = encode_value(value.detail);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("detail", std::move(encoded).value());
+    }
+    if (!value.jobs_running.is_absent()) {
+        auto encoded = encode_value(value.jobs_running);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("jobs_running", std::move(encoded).value());
+    }
+    if (!value.label.is_absent()) {
+        auto encoded = encode_value(value.label);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("label", std::move(encoded).value());
+    }
+    if (value.root_session) {
+        auto encoded = encode_value(*value.root_session);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("root_session", std::move(encoded).value());
+    }
     if (value.session) {
         auto encoded = encode_value(*value.session);
         if (!encoded) return std::move(encoded).error();
@@ -3721,12 +3864,27 @@ Result<Json> Codec<ReportAgentResult>::encode(const ReportAgentResult& value) {
     auto encoded_source = encode_value(value.source);
     if (!encoded_source) return std::move(encoded_source).error();
     object.emplace("source", std::move(encoded_source).value());
+    if (!value.started_at_ms.is_absent()) {
+        auto encoded = encode_value(value.started_at_ms);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("started_at_ms", std::move(encoded).value());
+    }
     auto encoded_state = encode_value(value.state);
     if (!encoded_state) return std::move(encoded_state).error();
     object.emplace("state", std::move(encoded_state).value());
     auto encoded_surface = encode_value(value.surface);
     if (!encoded_surface) return std::move(encoded_surface).error();
     object.emplace("surface", std::move(encoded_surface).value());
+    if (!value.tasks_completed.is_absent()) {
+        auto encoded = encode_value(value.tasks_completed);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("tasks_completed", std::move(encoded).value());
+    }
+    if (!value.tasks_total.is_absent()) {
+        auto encoded = encode_value(value.tasks_total);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("tasks_total", std::move(encoded).value());
+    }
     return Json(std::move(object));
 }
 
@@ -3734,6 +3892,52 @@ Result<ReportAgentResult> Codec<ReportAgentResult>::decode(const Json& value) {
     auto source = value.as_object();
     if (!source) return std::move(source).error();
     ReportAgentResult result{};
+    const Json* field_agents_active = value.find("agents_active");
+    if (field_agents_active) {
+        if (field_agents_active->is_null()) {
+            result.agents_active = Field<std::uint64_t>::null();
+        } else {
+            auto decoded = decode_value<std::uint64_t>(*field_agents_active);
+            if (!decoded) return std::move(decoded).error();
+            result.agents_active = Field<std::uint64_t>(std::move(decoded).value());
+        }
+    }
+    const Json* field_detail = value.find("detail");
+    if (field_detail) {
+        if (field_detail->is_null()) {
+            result.detail = Field<std::string>::null();
+        } else {
+            auto decoded = decode_value<std::string>(*field_detail);
+            if (!decoded) return std::move(decoded).error();
+            result.detail = Field<std::string>(std::move(decoded).value());
+        }
+    }
+    const Json* field_jobs_running = value.find("jobs_running");
+    if (field_jobs_running) {
+        if (field_jobs_running->is_null()) {
+            result.jobs_running = Field<std::uint64_t>::null();
+        } else {
+            auto decoded = decode_value<std::uint64_t>(*field_jobs_running);
+            if (!decoded) return std::move(decoded).error();
+            result.jobs_running = Field<std::uint64_t>(std::move(decoded).value());
+        }
+    }
+    const Json* field_label = value.find("label");
+    if (field_label) {
+        if (field_label->is_null()) {
+            result.label = Field<std::string>::null();
+        } else {
+            auto decoded = decode_value<std::string>(*field_label);
+            if (!decoded) return std::move(decoded).error();
+            result.label = Field<std::string>(std::move(decoded).value());
+        }
+    }
+    const Json* field_root_session = value.find("root_session");
+    if (field_root_session) {
+        auto decoded = decode_value<bool>(*field_root_session);
+        if (!decoded) return std::move(decoded).error();
+        result.root_session = std::move(decoded).value();
+    }
     const Json* field_session = value.find("session");
     if (!field_session) {
         return make_error(ErrorCode::decode, "missing required field 'session'");
@@ -3756,6 +3960,16 @@ Result<ReportAgentResult> Codec<ReportAgentResult>::decode(const Json& value) {
         if (!decoded) return std::move(decoded).error();
         result.source = std::move(decoded).value();
     }
+    const Json* field_started_at_ms = value.find("started_at_ms");
+    if (field_started_at_ms) {
+        if (field_started_at_ms->is_null()) {
+            result.started_at_ms = Field<std::uint64_t>::null();
+        } else {
+            auto decoded = decode_value<std::uint64_t>(*field_started_at_ms);
+            if (!decoded) return std::move(decoded).error();
+            result.started_at_ms = Field<std::uint64_t>(std::move(decoded).value());
+        }
+    }
     const Json* field_state = value.find("state");
     if (!field_state) {
         return make_error(ErrorCode::decode, "missing required field 'state'");
@@ -3773,6 +3987,26 @@ Result<ReportAgentResult> Codec<ReportAgentResult>::decode(const Json& value) {
         auto decoded = decode_value<Id>(*field_surface);
         if (!decoded) return std::move(decoded).error();
         result.surface = std::move(decoded).value();
+    }
+    const Json* field_tasks_completed = value.find("tasks_completed");
+    if (field_tasks_completed) {
+        if (field_tasks_completed->is_null()) {
+            result.tasks_completed = Field<std::uint64_t>::null();
+        } else {
+            auto decoded = decode_value<std::uint64_t>(*field_tasks_completed);
+            if (!decoded) return std::move(decoded).error();
+            result.tasks_completed = Field<std::uint64_t>(std::move(decoded).value());
+        }
+    }
+    const Json* field_tasks_total = value.find("tasks_total");
+    if (field_tasks_total) {
+        if (field_tasks_total->is_null()) {
+            result.tasks_total = Field<std::uint64_t>::null();
+        } else {
+            auto decoded = decode_value<std::uint64_t>(*field_tasks_total);
+            if (!decoded) return std::move(decoded).error();
+            result.tasks_total = Field<std::uint64_t>(std::move(decoded).value());
+        }
     }
     return result;
 }
@@ -7882,6 +8116,9 @@ Result<CloseTerminalRequest> Codec<CloseTerminalRequest>::decode(const Json& val
     }
     const Json* field_terminal_id = value.find("terminal_id");
     if (!field_terminal_id) {
+        field_terminal_id = value.find("terminal");
+    }
+    if (!field_terminal_id) {
         return make_error(ErrorCode::decode, "missing required field 'terminal_id'");
     }
     if (field_terminal_id) {
@@ -9757,6 +9994,11 @@ Result<Json> Codec<NotifyRequest>::encode(const NotifyRequest& value) {
         if (!encoded) return std::move(encoded).error();
         object.emplace("level", std::move(encoded).value());
     }
+    if (!value.subtitle.is_absent()) {
+        auto encoded = encode_value(value.subtitle);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("subtitle", std::move(encoded).value());
+    }
     if (!value.surface.is_absent()) {
         auto encoded = encode_value(value.surface);
         if (!encoded) return std::move(encoded).error();
@@ -9789,6 +10031,16 @@ Result<NotifyRequest> Codec<NotifyRequest>::decode(const Json& value) {
             auto decoded = decode_value<NotificationLevel>(*field_level);
             if (!decoded) return std::move(decoded).error();
             result.level = Field<NotificationLevel>(std::move(decoded).value());
+        }
+    }
+    const Json* field_subtitle = value.find("subtitle");
+    if (field_subtitle) {
+        if (field_subtitle->is_null()) {
+            result.subtitle = Field<std::string>::null();
+        } else {
+            auto decoded = decode_value<std::string>(*field_subtitle);
+            if (!decoded) return std::move(decoded).error();
+            result.subtitle = Field<std::string>(std::move(decoded).value());
         }
     }
     const Json* field_surface = value.find("surface");
@@ -10645,6 +10897,31 @@ Result<RenameWorkspaceRequest> Codec<RenameWorkspaceRequest>::decode(const Json&
 Result<Json> Codec<ReportAgentRequest>::encode(const ReportAgentRequest& value) {
     (void)value;
     Json::Object object;
+    if (!value.agents_active.is_absent()) {
+        auto encoded = encode_value(value.agents_active);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("agents_active", std::move(encoded).value());
+    }
+    if (!value.detail.is_absent()) {
+        auto encoded = encode_value(value.detail);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("detail", std::move(encoded).value());
+    }
+    if (!value.jobs_running.is_absent()) {
+        auto encoded = encode_value(value.jobs_running);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("jobs_running", std::move(encoded).value());
+    }
+    if (!value.label.is_absent()) {
+        auto encoded = encode_value(value.label);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("label", std::move(encoded).value());
+    }
+    if (value.root_session) {
+        auto encoded = encode_value(*value.root_session);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("root_session", std::move(encoded).value());
+    }
     if (!value.session.is_absent()) {
         auto encoded = encode_value(value.session);
         if (!encoded) return std::move(encoded).error();
@@ -10653,12 +10930,27 @@ Result<Json> Codec<ReportAgentRequest>::encode(const ReportAgentRequest& value) 
     auto encoded_source = encode_value(value.source);
     if (!encoded_source) return std::move(encoded_source).error();
     object.emplace("source", std::move(encoded_source).value());
+    if (!value.started_at_ms.is_absent()) {
+        auto encoded = encode_value(value.started_at_ms);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("started_at_ms", std::move(encoded).value());
+    }
     auto encoded_state = encode_value(value.state);
     if (!encoded_state) return std::move(encoded_state).error();
     object.emplace("state", std::move(encoded_state).value());
     auto encoded_surface = encode_value(value.surface);
     if (!encoded_surface) return std::move(encoded_surface).error();
     object.emplace("surface", std::move(encoded_surface).value());
+    if (!value.tasks_completed.is_absent()) {
+        auto encoded = encode_value(value.tasks_completed);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("tasks_completed", std::move(encoded).value());
+    }
+    if (!value.tasks_total.is_absent()) {
+        auto encoded = encode_value(value.tasks_total);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("tasks_total", std::move(encoded).value());
+    }
     return Json(std::move(object));
 }
 
@@ -10666,6 +10958,52 @@ Result<ReportAgentRequest> Codec<ReportAgentRequest>::decode(const Json& value) 
     auto source = value.as_object();
     if (!source) return std::move(source).error();
     ReportAgentRequest result{};
+    const Json* field_agents_active = value.find("agents_active");
+    if (field_agents_active) {
+        if (field_agents_active->is_null()) {
+            result.agents_active = Field<std::uint64_t>::null();
+        } else {
+            auto decoded = decode_value<std::uint64_t>(*field_agents_active);
+            if (!decoded) return std::move(decoded).error();
+            result.agents_active = Field<std::uint64_t>(std::move(decoded).value());
+        }
+    }
+    const Json* field_detail = value.find("detail");
+    if (field_detail) {
+        if (field_detail->is_null()) {
+            result.detail = Field<std::string>::null();
+        } else {
+            auto decoded = decode_value<std::string>(*field_detail);
+            if (!decoded) return std::move(decoded).error();
+            result.detail = Field<std::string>(std::move(decoded).value());
+        }
+    }
+    const Json* field_jobs_running = value.find("jobs_running");
+    if (field_jobs_running) {
+        if (field_jobs_running->is_null()) {
+            result.jobs_running = Field<std::uint64_t>::null();
+        } else {
+            auto decoded = decode_value<std::uint64_t>(*field_jobs_running);
+            if (!decoded) return std::move(decoded).error();
+            result.jobs_running = Field<std::uint64_t>(std::move(decoded).value());
+        }
+    }
+    const Json* field_label = value.find("label");
+    if (field_label) {
+        if (field_label->is_null()) {
+            result.label = Field<std::string>::null();
+        } else {
+            auto decoded = decode_value<std::string>(*field_label);
+            if (!decoded) return std::move(decoded).error();
+            result.label = Field<std::string>(std::move(decoded).value());
+        }
+    }
+    const Json* field_root_session = value.find("root_session");
+    if (field_root_session) {
+        auto decoded = decode_value<bool>(*field_root_session);
+        if (!decoded) return std::move(decoded).error();
+        result.root_session = std::move(decoded).value();
+    }
     const Json* field_session = value.find("session");
     if (field_session) {
         if (field_session->is_null()) {
@@ -10685,6 +11023,16 @@ Result<ReportAgentRequest> Codec<ReportAgentRequest>::decode(const Json& value) 
         if (!decoded) return std::move(decoded).error();
         result.source = std::move(decoded).value();
     }
+    const Json* field_started_at_ms = value.find("started_at_ms");
+    if (field_started_at_ms) {
+        if (field_started_at_ms->is_null()) {
+            result.started_at_ms = Field<std::uint64_t>::null();
+        } else {
+            auto decoded = decode_value<std::uint64_t>(*field_started_at_ms);
+            if (!decoded) return std::move(decoded).error();
+            result.started_at_ms = Field<std::uint64_t>(std::move(decoded).value());
+        }
+    }
     const Json* field_state = value.find("state");
     if (!field_state) {
         return make_error(ErrorCode::decode, "missing required field 'state'");
@@ -10702,6 +11050,26 @@ Result<ReportAgentRequest> Codec<ReportAgentRequest>::decode(const Json& value) 
         auto decoded = decode_value<Id>(*field_surface);
         if (!decoded) return std::move(decoded).error();
         result.surface = std::move(decoded).value();
+    }
+    const Json* field_tasks_completed = value.find("tasks_completed");
+    if (field_tasks_completed) {
+        if (field_tasks_completed->is_null()) {
+            result.tasks_completed = Field<std::uint64_t>::null();
+        } else {
+            auto decoded = decode_value<std::uint64_t>(*field_tasks_completed);
+            if (!decoded) return std::move(decoded).error();
+            result.tasks_completed = Field<std::uint64_t>(std::move(decoded).value());
+        }
+    }
+    const Json* field_tasks_total = value.find("tasks_total");
+    if (field_tasks_total) {
+        if (field_tasks_total->is_null()) {
+            result.tasks_total = Field<std::uint64_t>::null();
+        } else {
+            auto decoded = decode_value<std::uint64_t>(*field_tasks_total);
+            if (!decoded) return std::move(decoded).error();
+            result.tasks_total = Field<std::uint64_t>(std::move(decoded).value());
+        }
     }
     return result;
 }
@@ -12306,6 +12674,233 @@ Result<AgentChangedEvent> Codec<AgentChangedEvent>::decode(const Json& value) {
     return result;
 }
 
+Result<Json> Codec<AgentStateChangedEvent>::encode(const AgentStateChangedEvent& value) {
+    (void)value;
+    Json::Object object;
+    object.emplace("event", Json(std::string("agent-state-changed")));
+    if (!value.agents_active.is_absent()) {
+        auto encoded = encode_value(value.agents_active);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("agents_active", std::move(encoded).value());
+    }
+    if (!value.detail.is_absent()) {
+        auto encoded = encode_value(value.detail);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("detail", std::move(encoded).value());
+    }
+    if (!value.jobs_running.is_absent()) {
+        auto encoded = encode_value(value.jobs_running);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("jobs_running", std::move(encoded).value());
+    }
+    if (!value.label.is_absent()) {
+        auto encoded = encode_value(value.label);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("label", std::move(encoded).value());
+    }
+    if (value.previous) {
+        auto encoded = encode_value(*value.previous);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("previous", std::move(encoded).value());
+    } else {
+        object.emplace("previous", Json(nullptr));
+    }
+    if (value.root_session) {
+        auto encoded = encode_value(*value.root_session);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("root_session", std::move(encoded).value());
+    }
+    if (value.session) {
+        auto encoded = encode_value(*value.session);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("session", std::move(encoded).value());
+    } else {
+        object.emplace("session", Json(nullptr));
+    }
+    auto encoded_source = encode_value(value.source);
+    if (!encoded_source) return std::move(encoded_source).error();
+    object.emplace("source", std::move(encoded_source).value());
+    if (!value.started_at_ms.is_absent()) {
+        auto encoded = encode_value(value.started_at_ms);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("started_at_ms", std::move(encoded).value());
+    }
+    auto encoded_state = encode_value(value.state);
+    if (!encoded_state) return std::move(encoded_state).error();
+    object.emplace("state", std::move(encoded_state).value());
+    auto encoded_surface = encode_value(value.surface);
+    if (!encoded_surface) return std::move(encoded_surface).error();
+    object.emplace("surface", std::move(encoded_surface).value());
+    if (!value.tasks_completed.is_absent()) {
+        auto encoded = encode_value(value.tasks_completed);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("tasks_completed", std::move(encoded).value());
+    }
+    if (!value.tasks_total.is_absent()) {
+        auto encoded = encode_value(value.tasks_total);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("tasks_total", std::move(encoded).value());
+    }
+    auto encoded_updated_at_ms = encode_value(value.updated_at_ms);
+    if (!encoded_updated_at_ms) return std::move(encoded_updated_at_ms).error();
+    object.emplace("updated_at_ms", std::move(encoded_updated_at_ms).value());
+    return Json(std::move(object));
+}
+
+Result<AgentStateChangedEvent> Codec<AgentStateChangedEvent>::decode(const Json& value) {
+    auto source = value.as_object();
+    if (!source) return std::move(source).error();
+    AgentStateChangedEvent result{};
+    const Json* field_agents_active = value.find("agents_active");
+    if (field_agents_active) {
+        if (field_agents_active->is_null()) {
+            result.agents_active = Field<std::uint64_t>::null();
+        } else {
+            auto decoded = decode_value<std::uint64_t>(*field_agents_active);
+            if (!decoded) return std::move(decoded).error();
+            result.agents_active = Field<std::uint64_t>(std::move(decoded).value());
+        }
+    }
+    const Json* field_detail = value.find("detail");
+    if (field_detail) {
+        if (field_detail->is_null()) {
+            result.detail = Field<std::string>::null();
+        } else {
+            auto decoded = decode_value<std::string>(*field_detail);
+            if (!decoded) return std::move(decoded).error();
+            result.detail = Field<std::string>(std::move(decoded).value());
+        }
+    }
+    const Json* field_jobs_running = value.find("jobs_running");
+    if (field_jobs_running) {
+        if (field_jobs_running->is_null()) {
+            result.jobs_running = Field<std::uint64_t>::null();
+        } else {
+            auto decoded = decode_value<std::uint64_t>(*field_jobs_running);
+            if (!decoded) return std::move(decoded).error();
+            result.jobs_running = Field<std::uint64_t>(std::move(decoded).value());
+        }
+    }
+    const Json* field_label = value.find("label");
+    if (field_label) {
+        if (field_label->is_null()) {
+            result.label = Field<std::string>::null();
+        } else {
+            auto decoded = decode_value<std::string>(*field_label);
+            if (!decoded) return std::move(decoded).error();
+            result.label = Field<std::string>(std::move(decoded).value());
+        }
+    }
+    const Json* field_previous = value.find("previous");
+    if (!field_previous) {
+        return make_error(ErrorCode::decode, "missing required field 'previous'");
+    }
+    if (field_previous) {
+        if (field_previous->is_null()) {
+            result.previous.reset();
+        } else {
+            auto decoded = decode_value<AgentState>(*field_previous);
+            if (!decoded) return std::move(decoded).error();
+            result.previous = std::move(decoded).value();
+        }
+    }
+    const Json* field_root_session = value.find("root_session");
+    if (field_root_session) {
+        auto decoded = decode_value<bool>(*field_root_session);
+        if (!decoded) return std::move(decoded).error();
+        result.root_session = std::move(decoded).value();
+    }
+    const Json* field_session = value.find("session");
+    if (!field_session) {
+        return make_error(ErrorCode::decode, "missing required field 'session'");
+    }
+    if (field_session) {
+        if (field_session->is_null()) {
+            result.session.reset();
+        } else {
+            auto decoded = decode_value<std::string>(*field_session);
+            if (!decoded) return std::move(decoded).error();
+            result.session = std::move(decoded).value();
+        }
+    }
+    const Json* field_source = value.find("source");
+    if (!field_source) {
+        return make_error(ErrorCode::decode, "missing required field 'source'");
+    }
+    if (field_source) {
+        auto decoded = decode_value<AgentSource>(*field_source);
+        if (!decoded) return std::move(decoded).error();
+        result.source = std::move(decoded).value();
+    }
+    const Json* field_started_at_ms = value.find("started_at_ms");
+    if (field_started_at_ms) {
+        if (field_started_at_ms->is_null()) {
+            result.started_at_ms = Field<std::uint64_t>::null();
+        } else {
+            auto decoded = decode_value<std::uint64_t>(*field_started_at_ms);
+            if (!decoded) return std::move(decoded).error();
+            result.started_at_ms = Field<std::uint64_t>(std::move(decoded).value());
+        }
+    }
+    const Json* field_state = value.find("state");
+    if (!field_state) {
+        return make_error(ErrorCode::decode, "missing required field 'state'");
+    }
+    if (field_state) {
+        auto decoded = decode_value<AgentState>(*field_state);
+        if (!decoded) return std::move(decoded).error();
+        result.state = std::move(decoded).value();
+    }
+    const Json* field_surface = value.find("surface");
+    if (!field_surface) {
+        return make_error(ErrorCode::decode, "missing required field 'surface'");
+    }
+    if (field_surface) {
+        auto decoded = decode_value<Id>(*field_surface);
+        if (!decoded) return std::move(decoded).error();
+        result.surface = std::move(decoded).value();
+    }
+    const Json* field_tasks_completed = value.find("tasks_completed");
+    if (field_tasks_completed) {
+        if (field_tasks_completed->is_null()) {
+            result.tasks_completed = Field<std::uint64_t>::null();
+        } else {
+            auto decoded = decode_value<std::uint64_t>(*field_tasks_completed);
+            if (!decoded) return std::move(decoded).error();
+            result.tasks_completed = Field<std::uint64_t>(std::move(decoded).value());
+        }
+    }
+    const Json* field_tasks_total = value.find("tasks_total");
+    if (field_tasks_total) {
+        if (field_tasks_total->is_null()) {
+            result.tasks_total = Field<std::uint64_t>::null();
+        } else {
+            auto decoded = decode_value<std::uint64_t>(*field_tasks_total);
+            if (!decoded) return std::move(decoded).error();
+            result.tasks_total = Field<std::uint64_t>(std::move(decoded).value());
+        }
+    }
+    const Json* field_updated_at_ms = value.find("updated_at_ms");
+    if (!field_updated_at_ms) {
+        return make_error(ErrorCode::decode, "missing required field 'updated_at_ms'");
+    }
+    if (field_updated_at_ms) {
+        auto decoded = decode_value<std::uint64_t>(*field_updated_at_ms);
+        if (!decoded) return std::move(decoded).error();
+        result.updated_at_ms = std::move(decoded).value();
+    }
+    const Json* field_event = value.find("event");
+    if (!field_event) {
+        return make_error(ErrorCode::decode, "missing required field 'event'");
+    }
+    if (field_event) {
+        if (*field_event != Json(std::string("agent-state-changed"))) {
+            return make_error(ErrorCode::decode, "field 'event' has the wrong literal value");
+        }
+    }
+    return result;
+}
+
 Result<Json> Codec<BellEvent>::encode(const BellEvent& value) {
     (void)value;
     Json::Object object;
@@ -13292,6 +13887,11 @@ Result<Json> Codec<NotificationEvent>::encode(const NotificationEvent& value) {
     auto encoded_notification = encode_value(value.notification);
     if (!encoded_notification) return std::move(encoded_notification).error();
     object.emplace("notification", std::move(encoded_notification).value());
+    if (!value.subtitle.is_absent()) {
+        auto encoded = encode_value(value.subtitle);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("subtitle", std::move(encoded).value());
+    }
     if (value.surface) {
         auto encoded = encode_value(*value.surface);
         if (!encoded) return std::move(encoded).error();
@@ -13335,6 +13935,16 @@ Result<NotificationEvent> Codec<NotificationEvent>::decode(const Json& value) {
         auto decoded = decode_value<Id>(*field_notification);
         if (!decoded) return std::move(decoded).error();
         result.notification = std::move(decoded).value();
+    }
+    const Json* field_subtitle = value.find("subtitle");
+    if (field_subtitle) {
+        if (field_subtitle->is_null()) {
+            result.subtitle = Field<std::string>::null();
+        } else {
+            auto decoded = decode_value<std::string>(*field_subtitle);
+            if (!decoded) return std::move(decoded).error();
+            result.subtitle = Field<std::string>(std::move(decoded).value());
+        }
     }
     const Json* field_surface = value.find("surface");
     if (!field_surface) {
@@ -14441,6 +15051,11 @@ Result<Json> Codec<SurfaceExitedEvent>::encode(const SurfaceExitedEvent& value) 
     (void)value;
     Json::Object object;
     object.emplace("event", Json(std::string("surface-exited")));
+    if (!value.runtime_ms.is_absent()) {
+        auto encoded = encode_value(value.runtime_ms);
+        if (!encoded) return std::move(encoded).error();
+        object.emplace("runtime_ms", std::move(encoded).value());
+    }
     auto encoded_surface = encode_value(value.surface);
     if (!encoded_surface) return std::move(encoded_surface).error();
     object.emplace("surface", std::move(encoded_surface).value());
@@ -14451,6 +15066,16 @@ Result<SurfaceExitedEvent> Codec<SurfaceExitedEvent>::decode(const Json& value) 
     auto source = value.as_object();
     if (!source) return std::move(source).error();
     SurfaceExitedEvent result{};
+    const Json* field_runtime_ms = value.find("runtime_ms");
+    if (field_runtime_ms) {
+        if (field_runtime_ms->is_null()) {
+            result.runtime_ms = Field<std::uint64_t>::null();
+        } else {
+            auto decoded = decode_value<std::uint64_t>(*field_runtime_ms);
+            if (!decoded) return std::move(decoded).error();
+            result.runtime_ms = Field<std::uint64_t>(std::move(decoded).value());
+        }
+    }
     const Json* field_surface = value.find("surface");
     if (!field_surface) {
         return make_error(ErrorCode::decode, "missing required field 'surface'");
@@ -16797,6 +17422,11 @@ Result<Event> Codec<Event>::decode(const Json& value) {
         if (!decoded) return std::move(decoded).error();
         return Event{Event::Variant(std::move(decoded).value()), value};
     }
+    if (name.value() == "agent-state-changed") {
+        auto decoded = decode_value<AgentStateChangedEvent>(value);
+        if (!decoded) return std::move(decoded).error();
+        return Event{Event::Variant(std::move(decoded).value()), value};
+    }
     if (name.value() == "bell") {
         auto decoded = decode_value<BellEvent>(value);
         if (!decoded) return std::move(decoded).error();
@@ -17055,12 +17685,25 @@ constexpr std::array<CommandFieldRequirement, 5> kCommand47FieldRequirements{{
     {"mutation_id", 7U, ""},
     {"origin", 7U, ""},
 }};
+constexpr std::array<CommandFieldRequirement, 1> kCommand54FieldRequirements{{
+    {"subtitle", 12U, ""},
+}};
 constexpr std::array<CommandFieldRequirement, 5> kCommand70FieldRequirements{{
     {"expected_generation", 7U, ""},
     {"expected_revision", 7U, ""},
     {"key", 7U, "workspace-registry-v1"},
     {"mutation_id", 7U, ""},
     {"origin", 7U, ""},
+}};
+constexpr std::array<CommandFieldRequirement, 8> kCommand71FieldRequirements{{
+    {"agents_active", 12U, ""},
+    {"detail", 12U, ""},
+    {"jobs_running", 12U, ""},
+    {"label", 12U, ""},
+    {"root_session", 12U, ""},
+    {"started_at_ms", 12U, ""},
+    {"tasks_completed", 12U, ""},
+    {"tasks_total", 12U, ""},
 }};
 constexpr std::array<CommandFieldRequirement, 1> kCommand75FieldRequirements{{
     {"key", 9U, ""},
@@ -17145,7 +17788,7 @@ constexpr std::array<CommandMetadata, 101> kCommands{{
     {"new-screen", "control", 5U, "", false, "", "", std::span<const CommandFieldRequirement>{}},
     {"new-tab", "control", 5U, "", false, "", "", std::span<const CommandFieldRequirement>{}},
     {"new-workspace", "control", 5U, "", false, "", "", std::span<const CommandFieldRequirement>{}},
-    {"notify", "control", 6U, "", false, "", "", std::span<const CommandFieldRequirement>{}},
+    {"notify", "control", 6U, "", false, "", "", std::span<const CommandFieldRequirement>(kCommand54FieldRequirements)},
     {"pairing-response", "local-admin", 7U, "", false, "", "", std::span<const CommandFieldRequirement>{}},
     {"pane-neighbor", "control", 6U, "", false, "", "", std::span<const CommandFieldRequirement>{}},
     {"ping", "control", 6U, "", false, "", "", std::span<const CommandFieldRequirement>{}},
@@ -17162,7 +17805,7 @@ constexpr std::array<CommandMetadata, 101> kCommands{{
     {"rename-screen", "control", 5U, "", false, "", "", std::span<const CommandFieldRequirement>{}},
     {"rename-surface", "control", 5U, "", false, "", "", std::span<const CommandFieldRequirement>{}},
     {"rename-workspace", "control", 5U, "", false, "", "", std::span<const CommandFieldRequirement>(kCommand70FieldRequirements)},
-    {"report-agent", "control", 6U, "", false, "", "", std::span<const CommandFieldRequirement>{}},
+    {"report-agent", "control", 6U, "", false, "", "", std::span<const CommandFieldRequirement>(kCommand71FieldRequirements)},
     {"resize-attached-view", "frontend", 10U, "view-attachment-lease-v1", false, "", "", std::span<const CommandFieldRequirement>{}},
     {"resize-surface", "control", 5U, "", false, "", "", std::span<const CommandFieldRequirement>{}},
     {"resolve-terminal", "control", 9U, "", false, "", "", std::span<const CommandFieldRequirement>{}},
@@ -17193,8 +17836,9 @@ constexpr std::array<CommandMetadata, 101> kCommands{{
     {"wait-for", "control", 6U, "", false, "", "", std::span<const CommandFieldRequirement>{}},
     {"zoom-pane", "control", 6U, "", false, "", "", std::span<const CommandFieldRequirement>{}},
 }};
-constexpr std::array<EventMetadata, 46> kEvents{{
+constexpr std::array<EventMetadata, 47> kEvents{{
     {"agent-changed", 11U, "", "subscribe", "emitted"},
+    {"agent-state-changed", 12U, "", "subscribe", "emitted"},
     {"bell", 5U, "", "subscribe", "emitted"},
     {"browser-state", 6U, "", "attach-browser", "emitted"},
     {"client-attached", 6U, "", "subscribe", "emitted"},

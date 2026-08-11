@@ -629,7 +629,13 @@ pub(crate) fn public_session_snapshot(mux: &Mux) -> Result<Value, ResourceError>
                 }
             }));
         for durable in &terminal_registry.terminals {
-            if let Some(terminal_id) = terminal_resources_by_host.get(&durable.terminal_id)
+            if matches!(
+                durable.lifecycle,
+                TerminalLifecycle::Launching
+                    | TerminalLifecycle::Adopting
+                    | TerminalLifecycle::Running
+                    | TerminalLifecycle::Exited
+            ) && let Some(terminal_id) = terminal_resources_by_host.get(&durable.terminal_id)
                 && seen_terminals.insert(terminal_id.clone())
             {
                 terminal_order.push(terminal_id.clone());
@@ -694,6 +700,7 @@ pub(crate) fn public_session_snapshot(mux: &Mux) -> Result<Value, ResourceError>
                     "id": notification.id,
                     "session_id": topology.session_id,
                     "title": notification.title,
+                    "subtitle": notification.subtitle,
                     "body": notification.body,
                     "level": notification.level,
                     "created_at_ms": notification.created_at_ms.to_string(),
@@ -712,7 +719,25 @@ pub(crate) fn public_session_snapshot(mux: &Mux) -> Result<Value, ResourceError>
         let mut agents = public_projections
             .agents
             .into_iter()
-            .map(|agent| agent.into_public_snapshot(&topology.session_id))
+            .map(|agent| {
+                json!({
+                    "id": agent.id,
+                    "session_id": topology.session_id,
+                    "terminal_id": agent.terminal_id,
+                    "state": agent.state,
+                    "source": agent.source,
+                    "updated_at_ms": agent.updated_at_ms.to_string(),
+                    "source_session": agent.source_session,
+                    "root_session": agent.root_session,
+                    "label": agent.label,
+                    "detail": agent.detail,
+                    "started_at_ms": agent.started_at_ms.map(|value| value.to_string()),
+                    "tasks_completed": agent.tasks_completed.map(|value| value.to_string()),
+                    "tasks_total": agent.tasks_total.map(|value| value.to_string()),
+                    "jobs_running": agent.jobs_running.map(|value| value.to_string()),
+                    "agents_active": agent.agents_active.map(|value| value.to_string()),
+                })
+            })
             .collect::<Vec<_>>();
         agents.sort_by(|left, right| {
             left["id"].as_str().unwrap_or_default().cmp(right["id"].as_str().unwrap_or_default())

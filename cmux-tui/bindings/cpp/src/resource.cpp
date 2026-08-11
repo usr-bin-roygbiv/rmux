@@ -1146,6 +1146,11 @@ Result<Json::Object> NotificationCreateOptions::to_params() const {
         {"title", Json(title)},
         {"body", Json(body)},
     };
+    if (subtitle) {
+        params.emplace(
+            "subtitle",
+            subtitle->has_value() ? Json(**subtitle) : Json(nullptr));
+    }
     if (level) {
         std::string_view wire_level;
         switch (*level) {
@@ -1192,6 +1197,9 @@ Result<Json::Object> AgentReportOptions::to_params() const {
         case AgentState::done:
             wire_state = "done";
             break;
+        case AgentState::error:
+            wire_state = "error";
+            break;
         case AgentState::unknown:
             wire_state = "unknown";
             break;
@@ -1205,6 +1213,35 @@ Result<Json::Object> AgentReportOptions::to_params() const {
     };
     if (source_session) {
         params.emplace("source_session", Json(*source_session));
+    }
+    if (root_session) {
+        params.emplace("root_session", Json(true));
+    }
+    if (label) {
+        params.emplace("label", Json(*label));
+    }
+    if (detail) {
+        params.emplace("detail", Json(*detail));
+    }
+    if (started_at_ms) {
+        params.emplace(
+            "started_at_ms", Json(std::to_string(*started_at_ms)));
+    }
+    if (tasks_completed) {
+        params.emplace(
+            "tasks_completed", Json(std::to_string(*tasks_completed)));
+    }
+    if (tasks_total) {
+        params.emplace(
+            "tasks_total", Json(std::to_string(*tasks_total)));
+    }
+    if (jobs_running) {
+        params.emplace(
+            "jobs_running", Json(std::to_string(*jobs_running)));
+    }
+    if (agents_active) {
+        params.emplace(
+            "agents_active", Json(std::to_string(*agents_active)));
     }
     return params;
 }

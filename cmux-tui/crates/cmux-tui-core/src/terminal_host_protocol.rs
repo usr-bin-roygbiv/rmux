@@ -21,8 +21,10 @@ pub const MAX_KITTY_IMAGE_ALIASES: usize = 4_096;
 pub const KITTY_IMAGE_ALIAS_COUNT_LEN: usize = size_of::<u16>();
 pub const KITTY_IMAGE_ALIAS_ENCODED_LEN: usize = 2 * size_of::<u32>();
 const EXIT_PAYLOAD_VERSION: u16 = 1;
+const EXIT_PAYLOAD_RUNTIME_VERSION: u16 = 2;
 const EXIT_PAYLOAD_HEADER_LEN: usize = 12;
 const EXIT_PAYLOAD_STATUS_LEN: usize = EXIT_PAYLOAD_HEADER_LEN + 4;
+const EXIT_PAYLOAD_RUNTIME_LEN: usize = 8;
 pub const MAX_EXIT_REASON_BYTES: usize = 4096;
 const LAUNCH_FAILURE_PAYLOAD_VERSION: u16 = 1;
 const LAUNCH_FAILURE_PAYLOAD_HEADER_LEN: usize = 2 * size_of::<u16>();
@@ -48,6 +50,10 @@ pub const FLAG_SMART_RENDERER: u32 = 1 << 2;
 /// Protocol-v4 HostHello flag. The authenticated launch-owner connection must
 /// send `Activate` after its daemon has durably committed public topology.
 pub const FLAG_LAUNCH_ACTIVATION_REQUIRED: u32 = 1 << 3;
+/// ClientHello opt-in and HostHello acknowledgement for an authenticated
+/// owner that will send exactly one Terminate control. This path deliberately
+/// skips Snapshot registration and replay materialization.
+pub const FLAG_TERMINATE_ONLY: u32 = 1 << 4;
 /// ResizeAck payload flag: this request changed the canonical grid and its
 /// sequenced Resized+Colors transition was enqueued immediately before the
 /// targeted acknowledgement.
@@ -186,8 +192,9 @@ fn truncate_utf8(value: &mut String, max_bytes: usize) {
 }
 
 /// Exit payload layout is version:u16, outcome_kind:u8, flags:u8,
-/// exited_at_ms:u64, then code/signal:i32 or UTF-8 reason bytes. Signal flag
-/// bit zero is `core_dumped`; all other flags are reserved and must be zero.
+/// exited_at_ms:u64, then code/signal:i32 or UTF-8 reason bytes. Version two
+/// appends runtime_ms:u64. Signal flag bit zero is `core_dumped`; all other
+/// flags are reserved and must be zero.
 pub fn encode_terminal_exit(exit: &TerminalExit) -> Vec<u8> {
     let reason_len = match &exit.outcome {
         TerminalExitOutcome::Unknown { reason } => reason.len().min(MAX_EXIT_REASON_BYTES),
@@ -217,12 +224,16 @@ pub fn encode_terminal_exit(exit: &TerminalExit) -> Vec<u8> {
     payload
 }
 
-pub fn decode_terminal_exit(payload: &[u8]) -> Result<TerminalExit, ProtocolError> {
+pub fn encode_terminal_exit_with_runtime(exit: &TerminalExit, runtime_ms: u64) -> Vec<u8> {
+    let mut payload = encode_terminal_exit(exit);
+    payload[..2].copy_from_slice(&EXIT_PAYLOAD_RUNTIME_VERSION.to_le_bytes());
+    payload.reserve_exact(EXIT_PAYLOAD_RUNTIME_LEN);
+    payload.extend_from_slice(&runtime_ms.to_le_bytes());
+    payload
+}
+
+fn decode_terminal_exit_body(payload: &[u8]) -> Result<TerminalExit, ProtocolError> {
     if payload.len() < EXIT_PAYLOAD_HEADER_LEN {
-        return Err(ProtocolError::MalformedExitPayload);
-    }
-    let version = u16::from_le_bytes(payload[0..2].try_into().expect("fixed exit-version slice"));
-    if version != EXIT_PAYLOAD_VERSION {
         return Err(ProtocolError::MalformedExitPayload);
     }
     let kind = payload[2];
@@ -258,6 +269,33 @@ pub fn decode_terminal_exit(payload: &[u8]) -> Result<TerminalExit, ProtocolErro
         _ => return Err(ProtocolError::MalformedExitPayload),
     };
     Ok(TerminalExit { outcome, exited_at_ms })
+}
+
+pub fn decode_terminal_exit_frame(
+    payload: &[u8],
+) -> Result<(TerminalExit, Option<u64>), ProtocolError> {
+    if payload.len() < EXIT_PAYLOAD_HEADER_LEN {
+        return Err(ProtocolError::MalformedExitPayload);
+    }
+    let version = u16::from_le_bytes(payload[0..2].try_into().expect("fixed exit-version slice"));
+    let (body, runtime_ms) = match version {
+        EXIT_PAYLOAD_VERSION => (payload, None),
+        EXIT_PAYLOAD_RUNTIME_VERSION
+            if payload.len() >= EXIT_PAYLOAD_HEADER_LEN + EXIT_PAYLOAD_RUNTIME_LEN =>
+        {
+            let body_len = payload.len() - EXIT_PAYLOAD_RUNTIME_LEN;
+            let runtime_ms = u64::from_le_bytes(
+                payload[body_len..].try_into().expect("fixed exit-runtime slice"),
+            );
+            (&payload[..body_len], Some(runtime_ms))
+        }
+        _ => return Err(ProtocolError::MalformedExitPayload),
+    };
+    Ok((decode_terminal_exit_body(body)?, runtime_ms))
+}
+
+pub fn decode_terminal_exit(payload: &[u8]) -> Result<TerminalExit, ProtocolError> {
+    decode_terminal_exit_frame(payload).map(|(exit, _runtime_ms)| exit)
 }
 
 /// Machine-readable category for a terminal host that could not publish a
@@ -364,6 +402,9 @@ pub enum MessageKind {
     Title = 9,
     Pwd = 10,
     Bell = 11,
+    /// Structured child exit payload. Version one carries the authoritative
+    /// outcome; version two appends runtime milliseconds. Legacy hosts may
+    /// send an empty payload.
     Exit = 12,
     ResyncRequired = 13,
     Launch = 14,
@@ -490,9 +531,11 @@ pub struct Frame {
     /// consumers stage the first frame and expose only the paired state.
     /// Snapshot keeps flags zero: its same-boundary Colors frame is a mandatory
     /// bootstrap rule rather than a live-stream transition.
-    /// ClientHello/HostHello may negotiate [`FLAG_VIEWER_SIZE_ACKS`]. Unknown
-    /// flags, flags on Colors or other message kinds, an unflagged Resized, and
-    /// a flagged live frame not followed by Colors are protocol errors.
+    /// ClientHello/HostHello may negotiate [`FLAG_VIEWER_SIZE_ACKS`],
+    /// [`FLAG_SMART_RENDERER`], [`FLAG_LAUNCH_ACTIVATION_REQUIRED`], or
+    /// [`FLAG_TERMINATE_ONLY`]. Unknown flags, flags on Colors or other message
+    /// kinds, an unflagged Resized, and a flagged live frame not followed by
+    /// Colors are protocol errors.
     pub sequence: u64,
     pub payload: Vec<u8>,
 }
@@ -789,6 +832,67 @@ impl FrameDecoder {
     }
 }
 
+const BRACKETED_PASTE_BEGIN: &[u8] = b"\x1b[200~";
+const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
+
+/// A paste payload with embedded DEC 2004 delimiters removed.
+#[doc(hidden)]
+pub struct BracketedPaste<'a> {
+    payload: std::borrow::Cow<'a, [u8]>,
+}
+
+impl<'a> BracketedPaste<'a> {
+    pub fn new(payload: &'a [u8]) -> Self {
+        Self { payload: Self::sanitize(payload) }
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        self.payload.as_ref()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.payload.is_empty()
+    }
+
+    pub fn encoded(&self, bracketed: bool) -> std::borrow::Cow<'_, [u8]> {
+        if !bracketed || self.is_empty() {
+            return std::borrow::Cow::Borrowed(self.as_bytes());
+        }
+        let mut bytes = Vec::with_capacity(
+            BRACKETED_PASTE_BEGIN.len() + self.payload.len() + BRACKETED_PASTE_END.len(),
+        );
+        bytes.extend_from_slice(BRACKETED_PASTE_BEGIN);
+        bytes.extend_from_slice(self.as_bytes());
+        bytes.extend_from_slice(BRACKETED_PASTE_END);
+        std::borrow::Cow::Owned(bytes)
+    }
+
+    fn sanitize(payload: &'a [u8]) -> std::borrow::Cow<'a, [u8]> {
+        fn marker_len_at(payload: &[u8], index: usize) -> Option<usize> {
+            let rest = &payload[index..];
+            (rest.starts_with(BRACKETED_PASTE_BEGIN) || rest.starts_with(BRACKETED_PASTE_END))
+                .then_some(BRACKETED_PASTE_BEGIN.len())
+        }
+
+        let Some(first) = (0..payload.len()).find(|&index| marker_len_at(payload, index).is_some())
+        else {
+            return std::borrow::Cow::Borrowed(payload);
+        };
+        let mut output = Vec::with_capacity(payload.len() - BRACKETED_PASTE_BEGIN.len());
+        output.extend_from_slice(&payload[..first]);
+        let mut index = first;
+        while index < payload.len() {
+            if let Some(len) = marker_len_at(payload, index) {
+                index += len;
+            } else {
+                output.push(payload[index]);
+                index += 1;
+            }
+        }
+        std::borrow::Cow::Owned(output)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -969,6 +1073,13 @@ mod tests {
             assert_eq!(decode_terminal_exit(&encode_terminal_exit(&exit)).unwrap(), exit);
         }
 
+        let exit =
+            TerminalExit { outcome: TerminalExitOutcome::Exit { code: 0 }, exited_at_ms: 42 };
+        assert_eq!(
+            decode_terminal_exit_frame(&encode_terminal_exit_with_runtime(&exit, 321)).unwrap(),
+            (exit, Some(321))
+        );
+
         let mut unknown_kind = encode_terminal_exit(&TerminalExit::unknown("unknown"));
         unknown_kind[2] = 99;
         assert!(matches!(
@@ -1142,5 +1253,47 @@ mod tests {
             Err(ProtocolError::PayloadTooLarge { len, max })
                 if len == MAX_FRAME_PAYLOAD + 1 && max == MAX_FRAME_PAYLOAD
         ));
+    }
+
+    #[test]
+    fn paste_without_markers_is_borrowed_unchanged() {
+        let payload = b"plain text\nline two";
+        let paste = BracketedPaste::new(payload);
+        assert!(matches!(&paste.payload, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(paste.as_bytes(), payload);
+    }
+
+    #[test]
+    fn nested_begin_and_end_markers_are_removed_in_one_pass() {
+        let paste = BracketedPaste::new(b"\x1b[200~\x1b[200~before\x1b[201~after\x1b[201~");
+        assert_eq!(paste.as_bytes(), b"beforeafter");
+        assert_eq!(paste.encoded(true).as_ref(), b"\x1b[200~beforeafter\x1b[201~");
+    }
+
+    #[test]
+    fn marker_only_paste_is_empty_and_is_not_wrapped() {
+        let paste = BracketedPaste::new(b"\x1b[200~\x1b[201~");
+        assert!(paste.is_empty());
+        assert!(paste.encoded(true).is_empty());
+    }
+
+    #[test]
+    fn malformed_and_partial_markers_are_preserved() {
+        for payload in [b"\x1b[200".as_slice(), b"\x1b[201x".as_slice(), b"\x1b[20".as_slice()] {
+            assert_eq!(BracketedPaste::new(payload).as_bytes(), payload);
+        }
+    }
+
+    #[test]
+    fn raw_non_utf8_payload_is_sanitized_without_text_decoding() {
+        let paste = BracketedPaste::new(b"\xff\x1b[200~\x80\x1b[201~");
+        assert_eq!(paste.as_bytes(), b"\xff\x80");
+        assert_eq!(paste.encoded(true).as_ref(), b"\x1b[200~\xff\x80\x1b[201~");
+    }
+
+    #[test]
+    fn adjacent_markers_preserve_non_marker_escape_sequences() {
+        let paste = BracketedPaste::new(b"\x1b[201~\x1b[200~keep\x1b[2Dme\x1b[201~");
+        assert_eq!(paste.as_bytes(), b"keep\x1b[2Dme");
     }
 }

@@ -12,6 +12,7 @@ public final class Events {
     private Events() {}
 
     public static final EventMetadata AGENT_CHANGED = new EventMetadata("agent-changed", 11, null, List.of("subscribe"), true);
+    public static final EventMetadata AGENT_STATE_CHANGED = new EventMetadata("agent-state-changed", 12, null, List.of("subscribe"), true);
     public static final EventMetadata BELL = new EventMetadata("bell", 5, null, List.of("subscribe"), true);
     public static final EventMetadata BROWSER_STATE = new EventMetadata("browser-state", 6, null, List.of("attach-browser"), true);
     public static final EventMetadata CLIENT_ATTACHED = new EventMetadata("client-attached", 6, null, List.of("subscribe"), true);
@@ -62,6 +63,7 @@ public final class Events {
     static {
         LinkedHashMap<String, EventMetadata> values = new LinkedHashMap<>();
         values.put("agent-changed", AGENT_CHANGED);
+        values.put("agent-state-changed", AGENT_STATE_CHANGED);
         values.put("bell", BELL);
         values.put("browser-state", BROWSER_STATE);
         values.put("client-attached", CLIENT_ATTACHED);

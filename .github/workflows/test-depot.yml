@@ -26,9 +26,12 @@ on:
         required: false
         default: "120"
 
+permissions:
+  contents: read
+
 jobs:
   tests:
-    runs-on: ${{ vars.MACOS_RUNNER_15 || 'blacksmith-6vcpu-macos-15' }}
+    runs-on: ${{ vars.MACOS_RUNNER_15 || 'macos-15' }}
     timeout-minutes: 20
     steps:
       - name: Clear stale git locks (self-hosted reused workspace)
@@ -46,8 +49,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.event.inputs.ref || github.ref }}
+          ref: ${{ inputs.ref || github.sha }}
           submodules: recursive
+          persist-credentials: false
 
       - name: Select Xcode
         run: |
@@ -55,8 +59,6 @@ jobs:
           ./scripts/select-ci-xcode.sh
 
       - name: Download pre-built GhosttyKit.xcframework
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           ./scripts/download-prebuilt-ghosttykit.sh

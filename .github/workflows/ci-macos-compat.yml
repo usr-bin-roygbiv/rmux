@@ -2,6 +2,14 @@ name: macOS Compatibility
 
 on:
   workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact commit SHA to validate
+        required: false
+        default: ""
+
+permissions:
+  contents: read
 
 jobs:
   compat-tests:
@@ -9,7 +17,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: ${{ vars.MACOS_RUNNER_14 || 'macos-14' }}
             timeout: 60
             run_unit_tests: false
             run_mobile_transport_tests: true
@@ -26,7 +34,7 @@ jobs:
             virtual_display: true
             skip_zig: false
             expected_arch: x86_64
-            expected_os_major: "15"
+            expected_os_major: "14"
           - os: ${{ vars.MACOS_RUNNER_15 || 'blacksmith-6vcpu-macos-15' }}
             timeout: 120
             run_unit_tests: false
@@ -51,7 +59,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ inputs.ref || github.sha }}
           submodules: recursive
+          persist-credentials: false
 
       - name: Select Xcode
         env:

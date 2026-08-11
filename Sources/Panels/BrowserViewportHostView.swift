@@ -56,6 +56,11 @@ final class BrowserViewportHostView: NSView {
         }
     }
 
+    func invalidateBrowserPortalPresentation() {
+        needsLayout = true
+        setNeedsDisplay(bounds)
+    }
+
     @discardableResult
     func restoreWebViewIfNeeded() -> Bool {
         guard let webView else { return false }

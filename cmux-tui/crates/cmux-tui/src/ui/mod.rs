@@ -14,7 +14,7 @@ mod scrollbar;
 mod sidebar;
 pub(crate) mod terminal_grid;
 
-use cmux_tui_core::Rect;
+use cmux_tui_core::{AgentState, NotificationLevel, Rect};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect as RatatuiRect};
@@ -102,8 +102,12 @@ pub fn draw(app: &mut App, frame: &mut Frame) {
     app.reset_frame_cursor_spec();
     app.reset_rendered_status_message();
     let area = frame.area();
-    if area.height == 0 {
+    if area.width == 0 || area.height == 0 {
         return;
+    }
+    let frame_size = (area.width, area.height);
+    if app.frame_layout_size != Some(frame_size) {
+        app.sync_frame_layout(frame_size);
     }
     if app.shortcut_help.is_some() && (area.width < 24 || area.height < 7) {
         app.shortcut_help = None;
@@ -140,11 +144,14 @@ pub fn draw(app: &mut App, frame: &mut Frame) {
     } else {
         pane::draw_all(app, frame)
     };
-    if app.is_surface_only() {
+    if app.is_surface_only()
+        || (app.tree.active_workspace().is_none() && app.status_message.is_some())
+    {
         draw_surface_status(app, frame);
     } else {
         draw_status_bar(app, frame);
     }
+    draw_notification_banner(app, frame);
     overlay::draw_toast(app, frame);
     overlay::draw_menu(app, frame);
     overlay::draw_shortcut_help(app, frame);
@@ -348,6 +355,26 @@ fn sanitize_render_buffer(buffer: &mut Buffer) {
     }
 }
 
+pub(crate) fn agent_icon(state: AgentState) -> &'static str {
+    match state {
+        AgentState::Working => "●",
+        AgentState::Blocked => "!",
+        AgentState::Idle => "○",
+        AgentState::Done => "✓",
+        AgentState::Error => "×",
+        AgentState::Unknown => "?",
+    }
+}
+
+pub(crate) fn agent_color(app: &App, state: AgentState) -> Color {
+    match state {
+        AgentState::Working | AgentState::Done => app.config.theme.notification_info,
+        AgentState::Blocked | AgentState::Unknown => app.config.theme.notification_warning,
+        AgentState::Error => app.config.theme.notification_error,
+        AgentState::Idle => app.chrome.status_dim_fg,
+    }
+}
+
 /// Status bar: the active workspace's screens, one clickable segment per
 /// screen plus a trailing `+` for a new one. It spans only the pane
 /// region (it does not extend under the sidebar).
@@ -360,15 +387,27 @@ fn draw_status_bar(app: &mut App, frame: &mut Frame) {
     for x in bar_x..area.width {
         frame.buffer_mut()[(x, status_y)].set_symbol(" ").set_style(base);
     }
+    if bar_x >= area.width {
+        return;
+    }
     let active_style = Style::default()
         .bg(chrome.status_active_bg)
         .fg(chrome.status_active_fg)
         .add_modifier(Modifier::BOLD);
-    let mut x: u16 = bar_x;
+    let label = app
+        .status_message
+        .as_ref()
+        .map(|message| format!(" {message} "))
+        .unwrap_or_else(|| format!("[{}] ", app.session_label));
+    let label = truncate(&label, area.width.saturating_sub(bar_x) as usize);
+    let label_w = label.width() as u16;
+    let label_x = area.width.saturating_sub(label_w);
+    let content_end = label_x.saturating_sub(u16::from(label_w > 0));
+    let mut x = bar_x;
     let mut hits = Vec::new();
-    let put = |frame: &mut Frame, x: &mut u16, text: &str, style: Style| -> (u16, u16) {
+    let put = |frame: &mut Frame, x: &mut u16, end: u16, text: &str, style: Style| {
         let start = *x;
-        let width = text.width().min(area.width.saturating_sub(*x) as usize) as u16;
+        let width = (text.width() as u16).min(end.saturating_sub(*x));
         if width > 0 {
             frame.buffer_mut().set_stringn(*x, status_y, text, width as usize, style);
             *x += width;
@@ -376,25 +415,42 @@ fn draw_status_bar(app: &mut App, frame: &mut Frame) {
         (start, width)
     };
 
-    if let Some(ws) = app.tree.active_workspace().cloned() {
-        put(frame, &mut x, " screens ", base.fg(chrome.status_dim_fg));
-        for (i, screen) in ws.screens.iter().enumerate() {
-            let active = i == ws.active_screen;
-            let label = format!(" {} ", truncate(&screen.display_name(i), 20));
-            let (start, width) =
-                put(frame, &mut x, &label, if active { active_style } else { base });
-            if width > 0 {
-                hits.push((
-                    Rect { x: start, y: status_y, width, height: 1 },
-                    Hit::ScreenEntry { index: i, id: screen.id },
-                ));
-            }
+    let Some(ws) = app.tree.active_workspace().cloned() else {
+        frame.buffer_mut().set_stringn(label_x, status_y, &label, label_w as usize, base);
+        if app.prefix_armed {
+            draw_prefix_help_bar(app, frame, bar_x, status_y.saturating_sub(1));
         }
-        let (start, width) = put(frame, &mut x, " + ", base.fg(chrome.status_dim_fg));
+        return;
+    };
+    put(frame, &mut x, content_end, " screens ", base.fg(chrome.status_dim_fg));
+    for (index, screen) in ws.screens.iter().enumerate() {
+        let active = index == ws.active_screen;
+        let label = format!(" {} ", truncate(&screen.display_name(index), 20));
+        let (start, width) =
+            put(frame, &mut x, content_end, &label, if active { active_style } else { base });
         if width > 0 {
-            hits.push((Rect { x: start, y: status_y, width, height: 1 }, Hit::NewScreen));
+            hits.push((
+                Rect { x: start, y: status_y, width, height: 1 },
+                Hit::ScreenEntry { index, id: screen.id },
+            ));
         }
     }
+    let (start, width) = put(frame, &mut x, content_end, " + ", base.fg(chrome.status_dim_fg));
+    if width > 0 {
+        hits.push((Rect { x: start, y: status_y, width, height: 1 }, Hit::NewScreen));
+    }
+    if let Some(record) = app.active_agent_record().cloned() {
+        let summary =
+            format!(" {} {} ", agent_icon(record.state), app.agent_summary(&record, false));
+        put(
+            frame,
+            &mut x,
+            content_end,
+            &summary,
+            base.fg(agent_color(app, record.state)).add_modifier(Modifier::BOLD),
+        );
+    }
+
     // Session label / status message, right-aligned. Prefix help renders
     // over the pane border above this row.
     let available_label_width = area.width.saturating_sub(x) as usize;
@@ -481,8 +537,58 @@ fn draw_status_bar(app: &mut App, frame: &mut Frame) {
     } else {
         app.hide_status_message();
     }
+
     if app.prefix_armed {
         draw_prefix_help_bar(app, frame, bar_x, status_y.saturating_sub(1));
+    }
+}
+
+fn draw_notification_banner(app: &App, frame: &mut Frame) {
+    let Some(notification) = app.notification_banner() else { return };
+    let area = frame.area();
+    let x = if app.is_surface_only() { 0 } else { app.total_sidebar_width().min(area.width) };
+    let width = area.width.saturating_sub(x);
+    if width == 0 || area.height == 0 {
+        return;
+    }
+    let y = if app.is_surface_only() { area.height - 1 } else { area.height.saturating_sub(2) };
+    let color = match notification.level {
+        NotificationLevel::Info => app.config.theme.notification_info,
+        NotificationLevel::Warning => app.config.theme.notification_warning,
+        NotificationLevel::Error => app.config.theme.notification_error,
+    };
+    let base = Style::default().fg(app.chrome.status_bg).bg(color);
+    for column in x..area.width {
+        frame.buffer_mut()[(column, y)].set_symbol(" ").set_style(base);
+    }
+    let clean = |text: &str| {
+        text.chars()
+            .map(|character| if character.is_control() { ' ' } else { character })
+            .collect::<String>()
+    };
+    let marker = match notification.level {
+        NotificationLevel::Info => "i ",
+        NotificationLevel::Warning => "! ",
+        NotificationLevel::Error => "× ",
+    };
+    let mut cursor = x;
+    let end = area.width;
+    let mut put = |text: &str, style: Style| {
+        let available = end.saturating_sub(cursor);
+        if available > 0 {
+            frame.buffer_mut().set_stringn(cursor, y, text, available as usize, style);
+            cursor = cursor.saturating_add((text.width() as u16).min(available));
+        }
+    };
+    put(marker, base.add_modifier(Modifier::BOLD));
+    put(&clean(&notification.title), base.add_modifier(Modifier::BOLD));
+    if let Some(subtitle) = notification.subtitle.as_deref().filter(|value| !value.is_empty()) {
+        put(" · ", base);
+        put(&clean(subtitle), base.add_modifier(Modifier::BOLD | Modifier::UNDERLINED));
+    }
+    if !notification.body.is_empty() {
+        put(" — ", base);
+        put(&clean(&notification.body), base);
     }
 }
 

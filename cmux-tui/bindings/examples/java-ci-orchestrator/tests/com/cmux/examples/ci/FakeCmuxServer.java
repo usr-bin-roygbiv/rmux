@@ -273,18 +273,16 @@ final class FakeCmuxServer implements Transport {
         if (title.isBlank() || body.isBlank()) {
             throw new AssertionError("notification title and body must not be blank");
         }
-        return mutation(
-            Map.of(
-                "id", NOTIFICATION_ID,
-                "session_id", SESSION_ID,
-                "title", title,
-                "body", body,
-                "level", "error",
-                "created_at_ms", "100",
-                "unread", true
-            ),
-            "5"
-        );
+        Map<String, Object> notification = new LinkedHashMap<>();
+        notification.put("id", NOTIFICATION_ID);
+        notification.put("session_id", SESSION_ID);
+        notification.put("title", title);
+        notification.put("body", body);
+        notification.put("subtitle", params.get("subtitle"));
+        notification.put("level", "error");
+        notification.put("created_at_ms", "100");
+        notification.put("unread", true);
+        return mutation(notification, "5");
     }
 
     private Object closeWorkspace(Map<String, Object> params) {

@@ -2476,6 +2476,17 @@ impl Mux {
                 "terminal exit projection did not preserve its durable receipt"
             );
         }
+        // Exiting a terminal removes its views but preserves the durable exit
+        // receipt. Mark those tabs as detachments after removing the generated
+        // terminal tombstone so the tab close cannot cascade back to content.
+        let terminal_tab_ids = tab_ids.iter().map(|tab_id| tab_id.as_str()).collect::<HashSet<_>>();
+        for change in &mut projection.patch.changes {
+            if let ResourceChange::TombstoneTab { tab_id, close_content } = change
+                && terminal_tab_ids.contains(tab_id.as_str())
+            {
+                *close_content = false;
+            }
+        }
         let detached_tabs = projection
             .patch
             .changes
@@ -2516,7 +2527,11 @@ impl Mux {
         }))
     }
 
-    pub(super) fn finish_terminal_exit_detach(&self, effects: TerminalExitDetachEffects) {
+    pub(super) fn finish_terminal_exit_detach(
+        &self,
+        effects: TerminalExitDetachEffects,
+        runtime_ms: Option<u64>,
+    ) {
         for target in &effects.targets {
             self.purge_surface_side_tables(*target);
         }
@@ -2526,7 +2541,7 @@ impl Mux {
         }
         drop(effects.removed);
         for target in effects.targets {
-            self.emit(MuxEvent::SurfaceExited(target));
+            self.emit(MuxEvent::SurfaceExited { surface: target, runtime_ms });
         }
         self.emit(MuxEvent::TreeChanged);
         if effects.selection_resync {
@@ -2544,6 +2559,14 @@ impl Mux {
     pub(super) fn detach_exited_terminal_topology(
         &self,
         terminal_id: &str,
+    ) -> anyhow::Result<bool> {
+        self.detach_exited_terminal_topology_with_runtime(terminal_id, None)
+    }
+
+    pub(super) fn detach_exited_terminal_topology_with_runtime(
+        &self,
+        terminal_id: &str,
+        runtime_ms: Option<u64>,
     ) -> anyhow::Result<bool> {
         let mut registry = self.workspace_registry.lock().unwrap();
         let terminal = registry
@@ -2590,7 +2613,7 @@ impl Mux {
         drop(state);
         drop(registry);
         self.publish_resource_event();
-        self.finish_terminal_exit_detach(effects);
+        self.finish_terminal_exit_detach(effects, runtime_ms);
         Ok(true)
     }
 
@@ -2705,7 +2728,7 @@ impl Mux {
         &self,
         operation: ResourceOperation,
         slots: EffectSlots,
-        _registry: &WorkspaceRegistry,
+        registry: &WorkspaceRegistry,
         state: &State,
         notifications: &HashMap<SurfaceId, SurfaceNotification>,
     ) -> anyhow::Result<ResourceClosePlan> {
@@ -2802,9 +2825,19 @@ impl Mux {
                     .terminal_public_id()
                     .cloned()
                     .context("terminal catalog entry omitted its public identity")?;
-                let host = self
-                    .resource_terminal_host_identity(&runtime)
-                    .context("terminal omitted its durable host identity")?;
+                // A terminal resource can remain live without a committed host row
+                // (for example, an in-process runtime or interrupted adoption). Close
+                // only the durable host that actually exists; runtime termination below
+                // still owns the live process.
+                let terminal_batch =
+                    if let Some(terminal_id) = registry.terminal_host_id(&public_id)? {
+                        match registry.terminal_record(&terminal_id)? {
+                            Some(terminal) => vec![(terminal_id, terminal.incarnation)],
+                            None => Vec::new(),
+                        }
+                    } else {
+                        Vec::new()
+                    };
                 let placements = state
                     .placements_of_content(&ContentPublicId::Terminal(public_id.clone()))
                     .to_vec();
@@ -2815,7 +2848,7 @@ impl Mux {
                     surface_ids: placements,
                     changed_screens: screens,
                     terminal_runtime: Some(runtime),
-                    terminal_batch: vec![(host.terminal_id, Some(host.incarnation))],
+                    terminal_batch,
                     terminal_public_id: Some(public_id),
                     ..Default::default()
                 }

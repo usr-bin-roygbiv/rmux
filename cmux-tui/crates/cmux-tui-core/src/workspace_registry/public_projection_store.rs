@@ -27,6 +27,7 @@ const NOTIFICATION_LEDGER_CAPACITY: usize = 256;
 pub struct RegistryNotificationProjection {
     pub id: NotificationPublicId,
     pub title: String,
+    pub subtitle: Option<String>,
     pub body: String,
     pub level: String,
     pub terminal_id: Option<TerminalPublicId>,
@@ -42,6 +43,14 @@ pub struct RegistryAgentProjection {
     pub source: String,
     pub updated_at_ms: u64,
     pub source_session: Option<String>,
+    pub root_session: bool,
+    pub label: Option<String>,
+    pub detail: Option<String>,
+    pub started_at_ms: Option<u64>,
+    pub tasks_completed: Option<u64>,
+    pub tasks_total: Option<u64>,
+    pub jobs_running: Option<u64>,
+    pub agents_active: Option<u64>,
 }
 
 impl RegistryAgentProjection {
@@ -54,6 +63,14 @@ impl RegistryAgentProjection {
             "source": self.source,
             "updated_at_ms": self.updated_at_ms.to_string(),
             "source_session": self.source_session,
+            "root_session": self.root_session,
+            "label": self.label,
+            "detail": self.detail,
+            "started_at_ms": self.started_at_ms.map(|value| value.to_string()),
+            "tasks_completed": self.tasks_completed.map(|value| value.to_string()),
+            "tasks_total": self.tasks_total.map(|value| value.to_string()),
+            "jobs_running": self.jobs_running.map(|value| value.to_string()),
+            "agents_active": self.agents_active.map(|value| value.to_string()),
         })
     }
 }
@@ -73,6 +90,8 @@ struct StoredNotification {
     id: NotificationPublicId,
     session_id: SessionPublicId,
     title: String,
+    #[serde(default)]
+    subtitle: Option<String>,
     body: String,
     level: StoredNotificationLevel,
     terminal_id: Option<TerminalPublicId>,
@@ -111,6 +130,22 @@ struct StoredAgent {
     updated_at_ms: WireDecimal,
     source_session: Option<String>,
     #[serde(default)]
+    root_session: bool,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    detail: Option<String>,
+    #[serde(default)]
+    started_at_ms: Option<WireDecimal>,
+    #[serde(default)]
+    tasks_completed: Option<WireDecimal>,
+    #[serde(default)]
+    tasks_total: Option<WireDecimal>,
+    #[serde(default)]
+    jobs_running: Option<WireDecimal>,
+    #[serde(default)]
+    agents_active: Option<WireDecimal>,
+    #[serde(default)]
     extra: Option<HashMap<String, Value>>,
 }
 
@@ -121,6 +156,7 @@ enum StoredAgentState {
     Blocked,
     Idle,
     Done,
+    Error,
     Unknown,
 }
 
@@ -131,6 +167,7 @@ impl StoredAgentState {
             Self::Blocked => "blocked",
             Self::Idle => "idle",
             Self::Done => "done",
+            Self::Error => "error",
             Self::Unknown => "unknown",
         }
     }
@@ -261,6 +298,7 @@ impl WorkspaceRegistry {
             notifications.push(RegistryNotificationProjection {
                 id: stored.id,
                 title: stored.title,
+                subtitle: stored.subtitle,
                 body: stored.body,
                 level: stored.level.as_str().to_string(),
                 terminal_id: stored
@@ -285,6 +323,7 @@ impl WorkspaceRegistry {
                       projection.result_json,
                       projection.committed_revision
                FROM resource_agent_projections projection
+
                WHERE (?1 IS NULL OR projection.terminal_id = ?1)
              )
              SELECT terminal_id, result_json, committed_revision
@@ -332,6 +371,14 @@ impl WorkspaceRegistry {
                 source: stored.source.as_str().to_string(),
                 updated_at_ms: stored.updated_at_ms.get(),
                 source_session: stored.source_session,
+                root_session: stored.root_session,
+                label: stored.label,
+                detail: stored.detail,
+                started_at_ms: stored.started_at_ms.map(WireDecimal::get),
+                tasks_completed: stored.tasks_completed.map(WireDecimal::get),
+                tasks_total: stored.tasks_total.map(WireDecimal::get),
+                jobs_running: stored.jobs_running.map(WireDecimal::get),
+                agents_active: stored.agents_active.map(WireDecimal::get),
             });
         }
         agents.reverse();
@@ -867,6 +914,11 @@ mod tests {
                 "source":"hook",
                 "updated_at_ms":"10",
                 "source_session":null,
+                "started_at_ms":"1700000000000",
+                "tasks_completed":"3",
+                "tasks_total":"5",
+                "jobs_running":"1",
+                "agents_active":"2",
             }),
             2,
         );
@@ -890,6 +942,11 @@ mod tests {
         assert_eq!(live.agents.len(), 1);
         assert_eq!(registry.resource_agent_projection_count_for_test().unwrap(), 1);
         assert_eq!(live.agents[0].terminal_id, terminal);
+        assert_eq!(live.agents[0].started_at_ms, Some(1_700_000_000_000));
+        assert_eq!(live.agents[0].tasks_completed, Some(3));
+        assert_eq!(live.agents[0].tasks_total, Some(5));
+        assert_eq!(live.agents[0].jobs_running, Some(1));
+        assert_eq!(live.agents[0].agents_active, Some(2));
         assert_eq!(live.notifications[0].terminal_id, Some(terminal.clone()));
         assert!(live.notifications[0].unread);
 

@@ -1067,7 +1067,7 @@ mod tests {
         let pid_file_path = pid_file.display();
         fs::write(
             &script,
-            format!("#!/bin/sh\nprintf '%s' \"$$\" > '{pid_file_path}'\nexec /bin/sleep 30\n"),
+            format!("#!/bin/sh\nprintf '%s' \"$$\" > '{pid_file_path}'\nexec /bin/sleep 3600\n"),
         )
         .unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
@@ -1076,7 +1076,7 @@ mod tests {
         config.ssh_binary = script.to_string_lossy().into_owned();
         config.timeout = Duration::from_secs(5);
         let error = SshBootstrapper::new(config).unwrap().probe().await.unwrap_err();
-        assert!(matches!(error, BootstrapError::Timeout));
+        assert!(matches!(error, BootstrapError::Timeout), "unexpected timeout result: {error:?}");
 
         let pid = fs::read_to_string(pid_file).unwrap().parse::<libc::pid_t>().unwrap();
         assert_eq!(unsafe { libc::kill(pid, 0) }, -1);

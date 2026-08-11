@@ -25,16 +25,16 @@ use crate::terminal_host::{
     HostHello, HostIncarnation, HostReady, TerminalId,
 };
 use crate::terminal_host_protocol::{
-    CLEAR_HISTORY_ACK_AMBIGUOUS, CLEAR_HISTORY_ACK_FALLBACK_UNREPRESENTABLE,
+    BracketedPaste, CLEAR_HISTORY_ACK_AMBIGUOUS, CLEAR_HISTORY_ACK_FALLBACK_UNREPRESENTABLE,
     CLEAR_HISTORY_ACK_FALLBACK_WRITE_TIMEOUT, CLEAR_HISTORY_ACK_KNOWN_NOT_DELIVERED,
     CLEAR_HISTORY_ACK_OK, CLEAR_HISTORY_ACK_PRESERVATION_FAILED, CLEAR_HISTORY_ACK_STREAM_TIMEOUT,
-    FLAG_COLORS_FOLLOW, FLAG_LAUNCH_ACTIVATION_REQUIRED, FLAG_SMART_RENDERER,
+    FLAG_COLORS_FOLLOW, FLAG_LAUNCH_ACTIVATION_REQUIRED, FLAG_SMART_RENDERER, FLAG_TERMINATE_ONLY,
     FLAG_VIEWER_SIZE_ACKS, Frame, HostLaunchFailure, HostLaunchFailureKind,
     KITTY_IMAGE_ALIAS_COUNT_LEN, KITTY_IMAGE_ALIAS_ENCODED_LEN, LAUNCH_ACTIVATION_PROTOCOL_VERSION,
     MAX_FRAME_PAYLOAD, MAX_KITTY_IMAGE_ALIASES, MessageKind, PROTOCOL_VERSION,
     RESIZE_ACK_CANONICAL_CHANGED, TerminalExit, decode_host_launch_failure, decode_terminal_exit,
-    encode_host_launch_failure, encode_terminal_exit, read_frame, wait_for_native_child_status,
-    write_frame,
+    encode_host_launch_failure, encode_terminal_exit_with_runtime, read_frame,
+    wait_for_native_child_status, write_frame,
 };
 
 const HOST_RECORD_VERSION: u32 = 4;
@@ -49,7 +49,6 @@ const MAX_ENV: usize = 1024;
 const MAX_RENDERER_CAPABILITY_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 pub(crate) const CONTROL_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 const HOST_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
-const HOST_CONNECT_RETRY_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
 const HOST_CONNECT_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
 const TERMINAL_HOST_PUBLICATION_LOCK_FILE: &str = ".publication.lock";
 // Keep live PTY backpressure independent from the extra headroom needed by
@@ -153,6 +152,10 @@ pub struct TerminalHostRecord {
     /// hosts whose fire-and-forget Terminate command has no receipt.
     #[serde(default)]
     pub supports_terminate_ack: bool,
+    /// Additive handshake capability. Missing/false records require the
+    /// compatibility adoption path, which materializes a full Snapshot.
+    #[serde(default)]
+    pub supports_terminate_only: bool,
 }
 
 impl std::fmt::Debug for TerminalHostRecord {
@@ -169,6 +172,7 @@ impl std::fmt::Debug for TerminalHostRecord {
             .field("supports_set_defaults", &self.supports_set_defaults)
             .field("supports_clear_history", &self.supports_clear_history)
             .field("supports_terminate_ack", &self.supports_terminate_ack)
+            .field("supports_terminate_only", &self.supports_terminate_only)
             .finish()
     }
 }
@@ -1884,6 +1888,53 @@ mod unix {
         connect_current_record_with_timeout(record, record_path, HOST_HANDSHAKE_TIMEOUT)
     }
 
+    pub(crate) fn terminate_terminal_host_with_timeout(
+        record: &TerminalHostRecord,
+        record_path: &Path,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        validate_terminal_host_record(record_path, record)?;
+        if !record.supports_terminate_only {
+            anyhow::bail!("terminal host does not advertise terminate-only handshakes");
+        }
+        let terminal_id = TerminalId::from_bytes(decode_hex_array(&record.terminal_id)?);
+        let incarnation = HostIncarnation::from_bytes(decode_hex_array(&record.incarnation)?);
+        let owner_token = CapabilityToken::from_bytes(decode_hex_array(&record.owner_token)?);
+        let mut stream = UnixStream::connect(Path::new(&record.endpoint))?;
+        stream.set_read_timeout(Some(timeout))?;
+        stream.set_write_timeout(Some(timeout))?;
+        let hello = ClientHello {
+            min_version: PROTOCOL_VERSION,
+            max_version: PROTOCOL_VERSION,
+            role: ClientRole::Admin,
+            requested_rights: CapabilityRights::TERMINATE,
+            terminal_id,
+            token: owner_token,
+        };
+        let mut hello = hello.into_frame(1);
+        hello.flags = FLAG_TERMINATE_ONLY;
+        write_frame(&mut stream, &hello)?;
+        let response = read_required_frame(&mut stream, "terminate-only host hello")?;
+        if response.kind != MessageKind::HostHello
+            || response.flags != FLAG_TERMINATE_ONLY
+            || response.request_id != 1
+            || response.sequence != 0
+        {
+            anyhow::bail!("terminal host rejected terminate-only handshake");
+        }
+        let response = HostHello::decode(&response.payload)?;
+        if response.selected_version != PROTOCOL_VERSION
+            || response.granted_rights != CapabilityRights::TERMINATE
+            || response.terminal_id != terminal_id
+            || response.incarnation != incarnation
+        {
+            anyhow::bail!("terminate-only host identity or rights changed");
+        }
+        write_frame(&mut stream, &Frame::new(MessageKind::Terminate, Vec::new()))?;
+        stream.shutdown(std::net::Shutdown::Write)?;
+        Ok(())
+    }
+
     pub(crate) fn adopt_terminal_host_with_kitty_limits(
         record: TerminalHostRecord,
         record_path: PathBuf,
@@ -1948,12 +1999,17 @@ mod unix {
                 || record.supports_set_defaults
                 || record.supports_clear_history
                 || record.supports_terminate_ack
+                || record.supports_terminate_only
             {
                 anyhow::bail!("legacy terminal-host record has unexpected liveness fields");
             }
         } else {
-            if record.record_version == 2 && record.supports_terminate_ack {
-                anyhow::bail!("version 2 terminal-host record advertises terminate receipts");
+            if record.record_version == 2
+                && (record.supports_terminate_ack || record.supports_terminate_only)
+            {
+                anyhow::bail!(
+                    "version 2 terminal-host record advertises current termination capabilities"
+                );
             }
             let nonce = decode_lower_hex_array::<HOST_START_NONCE_LEN>(
                 &record.host_start_nonce,
@@ -2298,9 +2354,10 @@ mod unix {
         record_path: PathBuf,
         handshake_timeout: Duration,
     ) -> anyhow::Result<HostAttachment> {
+        let deadline = Instant::now() + handshake_timeout;
         let endpoint = PathBuf::from(&record.endpoint);
         let mut stream = Some(
-            connect_with_retry(&endpoint)
+            connect_with_retry_until(&endpoint, deadline)
                 .with_context(|| format!("connect terminal host at {}", endpoint.display()))?,
         );
         let mut failures = Vec::new();
@@ -2310,10 +2367,11 @@ mod unix {
         'protocols: for (protocol_version, smart_renderer) in attempts {
             let mut transient_retries = 0;
             loop {
+                let attempt_timeout = remaining_handshake_timeout(deadline)?;
                 let error = match connect_record_at_version(
                     record.clone(),
                     record_path.clone(),
-                    handshake_timeout,
+                    attempt_timeout,
                     protocol_version,
                     smart_renderer,
                     stream.take().expect("protocol attempt has a connected stream"),
@@ -2328,7 +2386,7 @@ mod unix {
                     failures.push(format!(
                         "protocol {protocol_version} transient attempt {transient_retries}: {error:#}"
                     ));
-                    match connect_with_retry(&endpoint) {
+                    match connect_with_retry_until(&endpoint, deadline) {
                         Ok(next_stream) => {
                             stream = Some(next_stream);
                             continue;
@@ -2342,7 +2400,7 @@ mod unix {
                 failures.push(format!("protocol {protocol_version}: {error:#}"));
                 break;
             }
-            match connect_with_retry(&endpoint) {
+            match connect_with_retry_until(&endpoint, deadline) {
                 Ok(next_stream) => stream = Some(next_stream),
                 Err(error) => {
                     failures.push(format!("protocol fallback reconnect: {error:#}"));
@@ -2365,13 +2423,14 @@ mod unix {
             // already-terminating host removes its socket. One current
             // handshake is sufficient; durable tombstone reconciliation
             // retries independently if that bounded attempt loses the race.
+            let deadline = Instant::now() + handshake_timeout;
             let endpoint = PathBuf::from(&record.endpoint);
-            let stream = connect_with_retry(&endpoint)
+            let stream = connect_with_retry_until(&endpoint, deadline)
                 .with_context(|| format!("connect terminal host at {}", endpoint.display()))?;
             return connect_record_at_version(
                 record,
                 record_path,
-                handshake_timeout,
+                remaining_handshake_timeout(deadline)?,
                 PROTOCOL_VERSION,
                 true,
                 stream,
@@ -2509,9 +2568,19 @@ mod unix {
         Ok(attachment)
     }
 
-    fn connect_with_retry(path: &Path) -> anyhow::Result<UnixStream> {
-        let deadline = Instant::now() + HOST_CONNECT_RETRY_WINDOW;
+    fn remaining_handshake_timeout(deadline: Instant) -> anyhow::Result<Duration> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        anyhow::ensure!(!remaining.is_zero(), "terminal-host adoption handshake timed out");
+        Ok(remaining)
+    }
+
+    fn connect_with_retry_until(path: &Path, deadline: Instant) -> anyhow::Result<UnixStream> {
         loop {
+            anyhow::ensure!(
+                Instant::now() < deadline,
+                "timed out connecting to terminal host at {}",
+                path.display()
+            );
             match UnixStream::connect(path) {
                 Ok(stream) => return Ok(stream),
                 Err(error) => {
@@ -3140,6 +3209,7 @@ mod unix {
         pid: Option<u32>,
         command: Vec<String>,
         cwd: Option<String>,
+        started_at: Instant,
         size: Mutex<(u16, u16)>,
         cell_pixels: Mutex<(u16, u16)>,
         viewer_sizes: Mutex<HashMap<u64, (u16, u16)>>,
@@ -4307,7 +4377,9 @@ mod unix {
                 {
                     let _term = self.term.lock().unwrap();
                     self.dead.store(true, Ordering::Release);
-                    let payload = encode_terminal_exit(&exit);
+                    let runtime_ms =
+                        u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    let payload = encode_terminal_exit_with_runtime(&exit, runtime_ms);
                     let cursor = self.smart.publish(Frame::new(MessageKind::Exit, payload.clone()));
                     self.smart.mark_applied(cursor);
                     self.broadcast(MessageKind::Exit, payload);
@@ -4723,6 +4795,7 @@ mod unix {
             supports_set_defaults: true,
             supports_clear_history: true,
             supports_terminate_ack: true,
+            supports_terminate_only: true,
         };
         let record_root = Path::new(&launch.record_path)
             .parent()
@@ -4842,6 +4915,7 @@ mod unix {
         if let Some(cwd) = launch.cwd.as_deref() {
             command.cwd(cwd);
         }
+        let started_at = Instant::now();
         let cmux_pty::SpawnedPty { master, mut child } = pty.spawn(command)?;
         let pid = child.process_id();
         let killer = child.clone_killer();
@@ -4894,6 +4968,7 @@ mod unix {
             pid,
             command: launch.command.clone(),
             cwd: launch.cwd.clone(),
+            started_at,
             size: Mutex::new((launch.cols, launch.rows)),
             cell_pixels: Mutex::new(cell_pixels),
             viewer_sizes: Mutex::new(HashMap::new()),
@@ -5139,6 +5214,20 @@ mod unix {
         let _ = write_frame(stream, &resync);
     }
 
+    fn write_terminal_paste(
+        writer: &mut impl Write,
+        payload: &[u8],
+        bracketed: bool,
+    ) -> std::io::Result<()> {
+        let paste = BracketedPaste::new(payload);
+        let encoded = paste.encoded(bracketed);
+        if encoded.is_empty() {
+            return Ok(());
+        }
+        writer.write_all(encoded.as_ref())?;
+        writer.flush()
+    }
+
     fn serve_client(host: Arc<HostShared>, stream: UnixStream) -> anyhow::Result<()> {
         serve_client_with_snapshot_timeout(host, stream, HOST_SNAPSHOT_BOUNDARY_TIMEOUT)
     }
@@ -5155,14 +5244,25 @@ mod unix {
         let hello_frame = read_required_frame(&mut stream, "client hello")?;
         if hello_frame.kind != MessageKind::ClientHello
             || hello_frame.sequence != 0
-            || hello_frame.flags & !(FLAG_VIEWER_SIZE_ACKS | FLAG_SMART_RENDERER) != 0
+            || hello_frame.flags
+                & !(FLAG_SMART_RENDERER | FLAG_VIEWER_SIZE_ACKS | FLAG_TERMINATE_ONLY)
+                != 0
+            || (hello_frame.flags & FLAG_TERMINATE_ONLY != 0
+                && hello_frame.flags != FLAG_TERMINATE_ONLY)
         {
             anyhow::bail!("terminal-host client did not send ClientHello");
         }
         let hello = ClientHello::decode(&hello_frame.payload)?;
         let response = authenticate_client(&host, &hello)?;
+        let terminate_only = hello_frame.flags == FLAG_TERMINATE_ONLY;
         if hello_frame.version != response.selected_version
-            || !response.granted_rights.contains(CapabilityRights::READ)
+            || (hello_frame.flags & FLAG_SMART_RENDERER != 0
+                && response.selected_version < SMART_RENDERER_PROTOCOL_VERSION)
+            || (terminate_only && response.selected_version != PROTOCOL_VERSION)
+            || (!terminate_only && !response.granted_rights.contains(CapabilityRights::READ))
+            || (terminate_only
+                && (hello.role != ClientRole::Admin
+                    || response.granted_rights != CapabilityRights::TERMINATE))
         {
             anyhow::bail!("terminal-host capability denied");
         }
@@ -5179,22 +5279,37 @@ mod unix {
             && hello_frame.flags & FLAG_SMART_RENDERER != 0
             && matches!(hello.role, ClientRole::Renderer | ClientRole::Admin);
         let mut hello_response = Frame::new(MessageKind::HostHello, response.encode());
+        if smart_renderer {
+            hello_response.flags |= FLAG_SMART_RENDERER;
+        }
         if viewer_size_acks {
             hello_response.flags |= FLAG_VIEWER_SIZE_ACKS;
+        }
+        if terminate_only {
+            hello_response.flags |= FLAG_TERMINATE_ONLY;
         }
         if activation_required {
             hello_response.flags |= FLAG_LAUNCH_ACTIVATION_REQUIRED;
         }
-        if smart_renderer {
-            hello_response.flags |= FLAG_SMART_RENDERER;
-        }
         hello_response.request_id = hello_frame.request_id;
         write_frame(&mut stream, &hello_response)?;
 
+        if terminate_only {
+            stream.set_read_timeout(Some(HOST_HANDSHAKE_TIMEOUT))?;
+            let terminate = read_required_frame(&mut stream, "terminate-only request")?;
+            if terminate.kind != MessageKind::Terminate
+                || terminate.flags != 0
+                || terminate.sequence != 0
+                || terminate.request_id != 0
+                || !terminate.payload.is_empty()
+            {
+                anyhow::bail!("terminate-only client sent an unexpected request");
+            }
+            host.request_termination();
+            return Ok(());
+        }
+
         let client = host.next_client.fetch_add(1, Ordering::Relaxed);
-        // Queue admission is bounded by HostTap's byte counters. A fixed
-        // channel capacity would make harmless PTY fragmentation observable
-        // as a renderer disconnect.
         let (sender, receiver) = mpsc_channel();
         let tap = HostTap::new(sender, Arc::new(stream.try_clone()?), MAX_HOST_CLIENT_QUEUED_BYTES);
         let command_sender = tap.clone();
@@ -5373,16 +5488,10 @@ mod unix {
                         if !granted_rights.contains(CapabilityRights::INPUT) {
                             break;
                         }
+
                         let bracketed = command_host.term.lock().unwrap().mode(2004, false);
                         let mut writer = command_host.writer.lock().unwrap();
-                        if bracketed {
-                            let _ = writer.write_all(b"\x1b[200~");
-                        }
-                        let _ = writer.write_all(&frame.payload);
-                        if bracketed {
-                            let _ = writer.write_all(b"\x1b[201~");
-                        }
-                        let _ = writer.flush();
+                        let _ = write_terminal_paste(&mut *writer, &frame.payload, bracketed);
                     }
                     MessageKind::ViewerSize if frame.payload.len() == 4 => {
                         if !granted_rights.contains(CapabilityRights::RESIZE) {
@@ -6112,6 +6221,7 @@ mod unix {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::terminal_host_protocol::encode_terminal_exit;
 
         fn test_kitty_state() -> KittyReplayState {
             KittyReplayState {
@@ -6203,6 +6313,7 @@ mod unix {
                 pid: None,
                 command: Vec::new(),
                 cwd: None,
+                started_at: Instant::now(),
                 size: Mutex::new((80, 24)),
                 cell_pixels: Mutex::new(DEFAULT_CELL_PIXELS),
                 viewer_sizes: Mutex::new(HashMap::new()),
@@ -6293,6 +6404,7 @@ mod unix {
                 pid: None,
                 command: vec!["/bin/cat".into()],
                 cwd: None,
+                started_at: Instant::now(),
                 size: Mutex::new((80, 24)),
                 cell_pixels: Mutex::new(DEFAULT_CELL_PIXELS),
                 viewer_sizes: Mutex::new(HashMap::new()),
@@ -6357,6 +6469,7 @@ mod unix {
                 supports_set_defaults: true,
                 supports_clear_history: true,
                 supports_terminate_ack: true,
+                supports_terminate_only: true,
             };
             let record_path = record.record_path(&root);
             let lease = HostLivenessLease::acquire(liveness_path(&record_path, &record)).unwrap();
@@ -6396,6 +6509,17 @@ mod unix {
             let maximum_rows = u16::MAX / DEFAULT_CELL_PIXELS.1;
             let height_error = pty_size(80, maximum_rows + 1, DEFAULT_CELL_PIXELS).unwrap_err();
             assert!(height_error.to_string().contains("pixel height"));
+        }
+
+        #[test]
+        fn terminal_host_paste_sanitizes_before_single_wrapping() {
+            let mut output = Vec::new();
+            write_terminal_paste(&mut output, b"\x1b[200~before\x1b[201~after", true).unwrap();
+            assert_eq!(output, b"\x1b[200~beforeafter\x1b[201~");
+
+            output.clear();
+            write_terminal_paste(&mut output, b"\x1b[200~\x1b[201~", true).unwrap();
+            assert!(output.is_empty());
         }
 
         #[test]
@@ -7187,6 +7311,7 @@ mod unix {
             legacy.supports_set_defaults = false;
             legacy.supports_clear_history = false;
             legacy.supports_terminate_ack = false;
+            legacy.supports_terminate_only = false;
             let legacy_path = legacy.record_path(root);
             write_record(&legacy_path, &legacy).unwrap();
 
@@ -7776,7 +7901,8 @@ mod unix {
 
         #[test]
         fn smart_owner_negotiation_falls_back_to_a_live_legacy_host() {
-            let (record_path, record, lease) = record_fixture("legacy-fallback");
+            let (record_path, mut record, lease) = record_fixture("legacy-fallback");
+            record.record_version = 3;
             let endpoint = PathBuf::from(&record.endpoint);
             prepare_private_dir(endpoint.parent().unwrap()).unwrap();
             let _ = fs::remove_file(&endpoint);
@@ -9096,6 +9222,7 @@ pub(crate) use unix::{
     ControlResponses, DecodedHostResize, DeferredCellPixelResolution,
     acquire_terminal_host_reset_lock, adopt_terminal_host_with_kitty_limits,
     decode_host_resize_payload_for_version, load_terminal_host_records_for_reset,
+    terminate_terminal_host_with_timeout,
 };
 #[cfg(unix)]
 pub use unix::{

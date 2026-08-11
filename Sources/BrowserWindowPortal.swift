@@ -1842,9 +1842,6 @@ final class WindowBrowserPortal: NSObject {
     private var hasDeferredFullSyncScheduled = false
     private var hasExternalGeometrySyncScheduled = false
     private var geometryObservers: [NSObjectProtocol] = []
-    // Keep generations monotonic even if a pending entry is cleared during hide/detach churn.
-    private var nextHostedWebViewRefreshGeneration: UInt64 = 0
-    private var pendingHostedWebViewRefreshes: [ObjectIdentifier: PendingHostedWebViewRefresh] = [:]
 
     private struct Entry {
         weak var webView: WKWebView?
@@ -1873,7 +1870,6 @@ final class WindowBrowserPortal: NSObject {
         let asyncScheduler = MainActorDeferredActionScheduler()
         let delayedScheduler = MainActorDeferredActionScheduler()
     }
-
     private var entriesByWebViewId: [ObjectIdentifier: Entry] = [:]
     private var webViewByAnchorId: [ObjectIdentifier: ObjectIdentifier] = [:]
 
@@ -2046,17 +2042,6 @@ final class WindowBrowserPortal: NSObject {
         // Synchronous layout stays below this boundary in portal-owned WebKit views.
         synchronizeAllWebViews(excluding: nil, source: "externalGeometry")
 
-        for entry in entriesByWebViewId.values {
-            guard let webView = entry.webView,
-                  let containerView = entry.containerView,
-                  !containerView.isHidden else { continue }
-            guard webView.cmuxBrowserViewportPresentationView.superview === containerView else { continue }
-            invalidateHostedWebViewGeometry(
-                webView,
-                in: containerView,
-                reason: "externalGeometry"
-            )
-        }
     }
 
     @discardableResult
@@ -2500,6 +2485,10 @@ final class WindowBrowserPortal: NSObject {
         containerView.needsLayout = true
         containerView.needsDisplay = true
         containerView.setNeedsDisplay(containerView.bounds)
+        if let viewportHost =
+            webView.cmuxBrowserViewportPresentationView as? BrowserViewportHostView {
+            viewportHost.invalidateBrowserPortalPresentation()
+        }
 
         for webKitSubview in hostedWebKitSubviews {
             if let scrollView = webKitSubview.enclosingScrollView {
@@ -2550,7 +2539,6 @@ final class WindowBrowserPortal: NSObject {
                     relativeTo: window
                 )
             }
-            webKitSubview.displayIfNeeded()
         }
         containerView.displayIfNeeded()
 #if DEBUG
@@ -2579,18 +2567,6 @@ final class WindowBrowserPortal: NSObject {
                 in: containerView,
                 reason: "portal.refresh.\(phase)"
             )
-        }
-    }
-
-    private func cancelPendingHostedWebViewRefreshes(
-        for webViewId: ObjectIdentifier,
-        keepGeneration: Bool = false
-    ) {
-        guard let pending = pendingHostedWebViewRefreshes[webViewId] else { return }
-        pending.asyncScheduler.cancel()
-        pending.delayedScheduler.cancel()
-        if !keepGeneration {
-            pendingHostedWebViewRefreshes.removeValue(forKey: webViewId)
         }
     }
 
@@ -2744,7 +2720,6 @@ final class WindowBrowserPortal: NSObject {
     }
 
     func detachWebView(withId webViewId: ObjectIdentifier) {
-        cancelPendingHostedWebViewRefreshes(for: webViewId)
         guard let entry = entriesByWebViewId.removeValue(forKey: webViewId) else { return }
         if let anchor = entry.anchorView {
             webViewByAnchorId.removeValue(forKey: ObjectIdentifier(anchor))
@@ -2777,7 +2752,6 @@ final class WindowBrowserPortal: NSObject {
         source: String,
         preserveCurrentSuperview: Bool
     ) {
-        cancelPendingHostedWebViewRefreshes(for: webViewId)
         guard let entry = entriesByWebViewId.removeValue(forKey: webViewId) else { return }
         if let anchor = entry.anchorView {
             webViewByAnchorId.removeValue(forKey: ObjectIdentifier(anchor))
@@ -2988,28 +2962,20 @@ final class WindowBrowserPortal: NSObject {
 
     func forceRefreshWebView(withId webViewId: ObjectIdentifier, reason: String) {
         guard ensureInstalled() else { return }
-        let refreshSource = "forceRefresh:\(reason)"
         synchronizeWebView(
             withId: webViewId,
-            source: refreshSource,
+            source: "forceRefresh:\(reason)",
             forcePresentationRefresh: true
-        )
-        guard let entry = entriesByWebViewId[webViewId],
-              let webView = entry.webView,
-              let containerView = entry.containerView,
-              !containerView.isHidden else {
-            return
-        }
-        // Portal-host replacement/fullscreen churn relies on forceRefresh to kick
-        // WebKit even when synchronizeWebView short-circuits or skips its refresh path.
-        refreshHostedWebViewPresentation(
-            webView,
-            in: containerView,
-            reason: refreshSource
         )
     }
 
-    func bind(webView: WKWebView, to anchorView: NSView, visibleInUI: Bool, zPriority: Int = 0) {
+    func bind(
+        webView: WKWebView,
+        to anchorView: NSView,
+        visibleInUI: Bool,
+        zPriority: Int = 0,
+        forcePresentationRefresh: Bool = false
+    ) {
         guard ensureInstalled() else { return }
 
         let webViewId = ObjectIdentifier(webView)
@@ -3157,7 +3123,7 @@ final class WindowBrowserPortal: NSObject {
         synchronizeWebView(
             withId: webViewId,
             source: "bind",
-            forcePresentationRefresh: didChangeAnchor
+            forcePresentationRefresh: didChangeAnchor || forcePresentationRefresh
         )
         pruneDeadEntries()
     }
@@ -3170,10 +3136,11 @@ final class WindowBrowserPortal: NSObject {
         synchronizeWebView(withId: primaryWebViewId, source: "anchorPrimary")
 
         // During rapid geometry changes (e.g. divider drag), syncing every web view
-        // on every frame is expensive and causes stuttering.  Each panel's
-        // HostContainerView fires its own geometry callback, so secondary web views
-        // will sync themselves.  Defer the all-sync to coalesce with the next
-        // run-loop turn instead.
+        // on every frame is expensive and causes stuttering. Each panel's
+        // HostContainerView fires its own geometry callback, so the primary entry
+        // is already current. Only schedule the recovery all-sync when another
+        // entry may still need reconciliation.
+        guard primaryWebViewId == nil || entriesByWebViewId.count > 1 else { return }
         scheduleDeferredFullSynchronizeAll()
         return true
     }
@@ -3239,9 +3206,9 @@ final class WindowBrowserPortal: NSObject {
             "reason=\(reason) remaining=\(entry.transientRecoveryRetriesRemaining)"
         )
 #endif
-        if entry.transientRecoveryRetriesRemaining > 0 {
-            scheduleDeferredFullSynchronizeAll()
-        }
+        // Schedule once more after consuming the final retry so the next pass
+        // observes exhaustion and hides a still-detached visible entry.
+        scheduleDeferredFullSynchronizeAll()
         return true
     }
 
@@ -3265,7 +3232,6 @@ final class WindowBrowserPortal: NSObject {
         }
         let previousTransientRecoveryReason = entry.transientRecoveryReason
         func hideContainerView(reason: String) {
-            cancelPendingHostedWebViewRefreshes(for: webViewId)
             containerView.setPaneTopChromeHeight(0)
             containerView.setSearchOverlay(nil)
             containerView.setDesignComposer(nil)
@@ -3345,13 +3311,10 @@ final class WindowBrowserPortal: NSObject {
                 anchorView.window == nil &&
                 anchorView.superview != nil
             if isOffWindowReparent {
-                if preserveVisibleDuringTransientDetach(reason: "anchorWindowMismatch.offWindow") {
-                    return
-                }
-                if scheduleTransientDetachRecovery(reason: "anchorWindowMismatch") {
-                    hideContainerView(reason: "anchorWindowMismatch")
-                    return
-                }
+                // A drag reparent can remain off-window beyond the retry budget. Exhaustion
+                // stops polling but must not hide the last valid presentation before rebind.
+                _ = preserveVisibleDuringTransientDetach(reason: "anchorWindowMismatch.offWindow")
+                return
             }
             // Only an anchor that is still parented somewhere (the drag/reparent
             // churn above) earns keeping the slot on screen. An anchor with no
@@ -3620,6 +3583,8 @@ final class WindowBrowserPortal: NSObject {
         }
 
         let containerOwnsWebView = webView.superview === containerView
+        let containerOwnsPresentationView =
+            webView.cmuxBrowserViewportPresentationView.superview === containerView
         let containerBounds = containerView.bounds
         let preNormalizeWebFrame = containerOwnsWebView ? webView.frame : .zero
         let inspectorHeightFromInsets = max(0, containerBounds.height - preNormalizeWebFrame.height)
@@ -3740,8 +3705,9 @@ final class WindowBrowserPortal: NSObject {
         let presentationUpdateKind = HostedWebViewPresentationUpdateKind.resolve(
             reasons: refreshReasons
         )
-        if !shouldHide, containerOwnsWebView, presentationUpdateKind != .none {
+        if !shouldHide, containerOwnsPresentationView, presentationUpdateKind != .none {
             if presentationUpdateKind == .refresh &&
+                !forcePresentationRefresh &&
                 hostedInspectorAdjustedDuringSync &&
                 !recoveredFromTransientGeometry &&
                 !requiresRenderingStateReattach {
@@ -3988,7 +3954,13 @@ enum BrowserWindowPortalRegistry {
         return portal
     }
 
-    static func bind(webView: WKWebView, to anchorView: NSView, visibleInUI: Bool, zPriority: Int = 0) {
+    static func bind(
+        webView: WKWebView,
+        to anchorView: NSView,
+        visibleInUI: Bool,
+        zPriority: Int = 0,
+        forcePresentationRefresh: Bool = false
+    ) {
         guard let window = anchorView.window else { return }
 
         let windowId = ObjectIdentifier(window)
@@ -4000,7 +3972,13 @@ enum BrowserWindowPortalRegistry {
             portalsByWindowId[oldWindowId]?.detachWebView(withId: webViewId)
         }
 
-        nextPortal.bind(webView: webView, to: anchorView, visibleInUI: visibleInUI, zPriority: zPriority)
+        nextPortal.bind(
+            webView: webView,
+            to: anchorView,
+            visibleInUI: visibleInUI,
+            zPriority: zPriority,
+            forcePresentationRefresh: forcePresentationRefresh
+        )
         webViewToWindowId[webViewId] = windowId
         pruneWebViewMappings(for: windowId, validWebViewIds: nextPortal.webViewIds())
         postRegistryDidChange(for: webView)

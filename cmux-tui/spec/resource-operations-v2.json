@@ -2418,6 +2418,16 @@
             "name": "string"
           }
         },
+        "subtitle": {
+          "required": true,
+          "type": {
+            "kind": "nullable",
+            "value": {
+              "kind": "primitive",
+              "name": "string"
+            }
+          }
+        },
         "body": {
           "required": true,
           "type": {
@@ -2523,6 +2533,83 @@
             "value": {
               "kind": "primitive",
               "name": "string"
+            }
+          }
+        },
+        "root_session": {
+          "required": true,
+          "type": {
+            "kind": "primitive",
+            "name": "boolean"
+          }
+        },
+        "label": {
+          "required": true,
+          "type": {
+            "kind": "nullable",
+            "value": {
+              "kind": "primitive",
+              "name": "string"
+            }
+          }
+        },
+        "detail": {
+          "required": true,
+          "type": {
+            "kind": "nullable",
+            "value": {
+              "kind": "primitive",
+              "name": "string"
+            }
+          }
+        },
+        "started_at_ms": {
+          "required": true,
+          "type": {
+            "kind": "nullable",
+            "value": {
+              "kind": "primitive",
+              "name": "decimal"
+            }
+          }
+        },
+        "tasks_completed": {
+          "required": true,
+          "type": {
+            "kind": "nullable",
+            "value": {
+              "kind": "primitive",
+              "name": "decimal"
+            }
+          }
+        },
+        "tasks_total": {
+          "required": true,
+          "type": {
+            "kind": "nullable",
+            "value": {
+              "kind": "primitive",
+              "name": "decimal"
+            }
+          }
+        },
+        "jobs_running": {
+          "required": true,
+          "type": {
+            "kind": "nullable",
+            "value": {
+              "kind": "primitive",
+              "name": "decimal"
+            }
+          }
+        },
+        "agents_active": {
+          "required": true,
+          "type": {
+            "kind": "nullable",
+            "value": {
+              "kind": "primitive",
+              "name": "decimal"
             }
           }
         },
@@ -4970,6 +5057,7 @@
         "blocked",
         "idle",
         "done",
+        "error",
         "unknown"
       ]
     },
@@ -5745,6 +5833,84 @@
             "type": {
               "kind": "primitive",
               "name": "string"
+            }
+          },
+          "root_session": {
+            "required": false,
+            "type": {
+              "kind": "primitive",
+              "name": "boolean"
+            },
+            "default": false
+          },
+          "label": {
+            "required": false,
+            "type": {
+              "kind": "nullable",
+              "value": {
+                "kind": "primitive",
+                "name": "string"
+              }
+            }
+          },
+          "detail": {
+            "required": false,
+            "type": {
+              "kind": "nullable",
+              "value": {
+                "kind": "primitive",
+                "name": "string"
+              }
+            }
+          },
+          "started_at_ms": {
+            "required": false,
+            "type": {
+              "kind": "nullable",
+              "value": {
+                "kind": "primitive",
+                "name": "decimal"
+              }
+            }
+          },
+          "tasks_completed": {
+            "required": false,
+            "type": {
+              "kind": "nullable",
+              "value": {
+                "kind": "primitive",
+                "name": "decimal"
+              }
+            }
+          },
+          "tasks_total": {
+            "required": false,
+            "type": {
+              "kind": "nullable",
+              "value": {
+                "kind": "primitive",
+                "name": "decimal"
+              }
+            }
+          },
+          "jobs_running": {
+            "required": false,
+            "type": {
+              "kind": "nullable",
+              "value": {
+                "kind": "primitive",
+                "name": "decimal"
+              }
+            }
+          },
+          "agents_active": {
+            "required": false,
+            "type": {
+              "kind": "nullable",
+              "value": {
+                "kind": "primitive",
+                "name": "decimal"
+              }
             }
           },
           "expected_revision": {
@@ -7211,6 +7377,16 @@
               "kind": "primitive",
               "name": "string",
               "min_length": 1
+            }
+          },
+          "subtitle": {
+            "required": false,
+            "type": {
+              "kind": "nullable",
+              "value": {
+                "kind": "primitive",
+                "name": "string"
+              }
             }
           },
           "body": {

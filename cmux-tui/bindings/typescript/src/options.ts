@@ -161,15 +161,24 @@ export interface BrowserViewerSizeOptions {
 export interface NotificationOptions {
   readonly title: string;
   readonly body: string;
+  readonly subtitle?: string | null;
   readonly level?: "info" | "warning" | "error";
   readonly terminalId?: TerminalId;
 }
 
 export interface AgentReportOptions {
   readonly terminalId: TerminalId;
-  readonly state: "working" | "blocked" | "idle" | "done" | "unknown";
+  readonly state: "working" | "blocked" | "idle" | "done" | "error" | "unknown";
   readonly source: "hook" | "socket";
   readonly sourceSession?: string;
+  readonly rootSession?: boolean;
+  readonly label?: string | null;
+  readonly detail?: string | null;
+  readonly startedAtMs?: DecimalString | null;
+  readonly tasksCompleted?: DecimalString | null;
+  readonly tasksTotal?: DecimalString | null;
+  readonly jobsRunning?: DecimalString | null;
+  readonly agentsActive?: DecimalString | null;
 }
 
 export interface SidebarInputOptions {

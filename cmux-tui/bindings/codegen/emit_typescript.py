@@ -353,7 +353,7 @@ def _render_events(ir: Any, document: Mapping[str, Any]) -> str:
         lines,
         "KnownCmuxEvent",
         emitted,
-        f"Every event emitted by protocol v{ir.mux_protocol}.",
+        f"Every event emitted by protocol v{document['protocol']['version']}.",
     )
     _union(
         lines,

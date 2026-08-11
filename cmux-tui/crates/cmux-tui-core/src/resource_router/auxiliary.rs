@@ -15,7 +15,10 @@ use crate::resource::{
     SessionPublicId, SidebarViewPublicId, TerminalPublicId, WireDecimal,
 };
 use crate::sidebar_resource::{resolve_sidebar_view, sidebar_snapshot, sidebar_view_id};
-use crate::{AgentSource, AgentState, Mux, ResourceSelectors, ResourceTarget, WorkspaceMutation};
+use crate::{
+    AgentSource, AgentState, AgentTelemetry, Mux, ResourceSelectors, ResourceTarget,
+    WorkspaceMutation,
+};
 
 pub(super) fn handles(operation: ResourceOperation) -> bool {
     matches!(
@@ -101,6 +104,16 @@ fn report_agent(mux: &Arc<Mux>, request: ParsedResourceRequest) -> Result<Value,
     let source = parse_agent_source(required_string(&request.fields, "source")?)?;
     let source_session =
         request.fields.get("source_session").and_then(Value::as_str).map(str::to_string);
+    let telemetry = AgentTelemetry {
+        root_session: request.fields.get("root_session").and_then(Value::as_bool).unwrap_or(false),
+        label: request.fields.get("label").and_then(Value::as_str).map(str::to_string),
+        detail: request.fields.get("detail").and_then(Value::as_str).map(str::to_string),
+        started_at_ms: optional_agent_decimal(&request.fields, "started_at_ms"),
+        tasks_completed: optional_agent_decimal(&request.fields, "tasks_completed"),
+        tasks_total: optional_agent_decimal(&request.fields, "tasks_total"),
+        jobs_running: optional_agent_decimal(&request.fields, "jobs_running"),
+        agents_active: optional_agent_decimal(&request.fields, "agents_active"),
+    };
     let mutation = mutation(&request)?;
     let commit = mux
         .resource_report_agent_selected(
@@ -109,11 +122,16 @@ fn report_agent(mux: &Arc<Mux>, request: ParsedResourceRequest) -> Result<Value,
             state,
             source,
             source_session,
+            telemetry,
             expected_revision(&request.fields)?,
             &mutation,
         )
         .map_err(resource_operation_error)?;
     mutation_result(mux, commit.result, commit.revision, commit.replayed)
+}
+
+fn optional_agent_decimal(fields: &serde_json::Map<String, Value>, field: &str) -> Option<u64> {
+    fields.get(field).and_then(Value::as_str).and_then(|value| value.parse().ok())
 }
 
 fn parse_agent_state(value: &Value) -> Result<AgentState, ResourceError> {
@@ -122,6 +140,7 @@ fn parse_agent_state(value: &Value) -> Result<AgentState, ResourceError> {
         Some("blocked") => Ok(AgentState::Blocked),
         Some("idle") => Ok(AgentState::Idle),
         Some("done") => Ok(AgentState::Done),
+        Some("error") => Ok(AgentState::Error),
         Some("unknown") => Ok(AgentState::Unknown),
         _ => Err(validation_error("invalid agent state", json!({"state":value}))),
     }
@@ -752,8 +771,14 @@ mod tests {
         let unrelated_terminal = unrelated.terminal_public_id().cloned().unwrap();
 
         for (surface, session) in [(requested.id, "requested"), (unrelated.id, "unrelated")] {
-            mux.report_agent(surface, AgentState::Working, AgentSource::Hook, Some(session.into()))
-                .unwrap();
+            mux.report_agent(
+                surface,
+                AgentState::Working,
+                AgentSource::Hook,
+                Some(session.into()),
+                AgentTelemetry::default(),
+            )
+            .unwrap();
         }
         mux.corrupt_agent_projection_for_test(&unrelated_terminal);
 

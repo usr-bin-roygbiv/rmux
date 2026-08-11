@@ -12,7 +12,7 @@ Implemented event lines can appear on two stream types:
 
 | Stream | How to start | Event names |
 | --- | --- | --- |
-| Subscribe stream | `subscribe` command | `tree-changed`, all workspace/screen/pane/tab deltas, `frontend-projection-changed`, `terminal-registry-changed`, `layout-changed`, `surface-output`, `scroll-changed`, `surface-resized`, `surface-resize-failed`, `surface-exited`, `title-changed`, `bell`, `notification`, `status`, `config-reload-requested`, `window-title-requested`, `client-attached`, `client-changed`, `client-detached`, `client-list-invalidated`, `pairing-requested`, `pairing-resolved`, `empty`, `overflow` |
+| Subscribe stream | `subscribe` command | `tree-changed`, all workspace/screen/pane/tab deltas, `frontend-projection-changed`, `terminal-registry-changed`, `layout-changed`, `surface-output`, `scroll-changed`, `surface-resized`, `surface-resize-failed`, `surface-exited`, `title-changed`, `bell`, `agent-state-changed`, `notification`, `status`, `config-reload-requested`, `window-title-requested`, `client-attached`, `client-changed`, `client-detached`, `client-list-invalidated`, `pairing-requested`, `pairing-resolved`, `empty`, `overflow` |
 | Attach stream v5 | `attach-surface` command | `vt-state`, `output`, `detached`, `overflow` |
 | Attach stream v6 PTY | `attach-surface` command | `vt-state`, `resized`, `output`, `colors-changed`, `notification`, `scroll-changed`, `detached`, `overflow` |
 | Attach stream v7 render mode | `attach-surface` command | `render-state`, `render-delta`, `scroll-changed`, `detached`, `overflow` |
@@ -24,7 +24,7 @@ Events and command responses share one full-duplex connection. Each event or res
 
 Every entity-scoped event carries its subject id in the field named below. Tree deltas also carry every parent id needed to place the entity. Legacy session-wide events have no numeric entity subject; the table marks them `session` rather than inventing an id and changing their v5/v6 payloads.
 
-Subscribe events belong to the `subscribe` registration. Tree lifecycle deltas belong only to a subscription that selected `tree_events:"deltas"`; `tree-changed` belongs to the default `"coarse"` subscription and may also appear on a delta subscription as a resync fallback. The tree-event selection does not affect other subscribe events. Attach events belong to the attachment selected by `attach-surface`; their `surface` field permits multiple attachments on one connection. `notification` and `scroll-changed` can appear on subscribe and selected attach streams. Consumers must tolerate those duplicated routes. Protocol v10 has no public stream id or cancellation command, so a connection must use at most one subscription and one attachment per surface when event origin must be unambiguous.
+Subscribe events belong to the `subscribe` registration. Tree lifecycle deltas belong only to a subscription that selected `tree_events:"deltas"`; `tree-changed` belongs to the default `"coarse"` subscription and may also appear on a delta subscription as a resync fallback. The tree-event selection does not affect other subscribe events. Attach events belong to the attachment selected by `attach-surface`; their `surface` field permits multiple attachments on one connection. `notification` and `scroll-changed` can appear on subscribe and selected attach streams. Consumers must tolerate those duplicated routes. Protocol v12 has no public stream id or cancellation command, so a connection must use at most one subscription and one attachment per surface when event origin must be unambiguous.
 
 | Event | Stream | Subject field | Since/compatibility |
 | --- | --- | --- | --- |
@@ -45,7 +45,7 @@ Subscribe events belong to the `subscribe` registration. Tree lifecycle deltas b
 | `layout-changed` | subscribe | `screen` | protocol 6 |
 | `surface-output` | subscribe | `surface` | protocol 5 |
 | `surface-resized` | subscribe | `surface` | protocol 5 |
-| `surface-exited` | subscribe | `surface` | protocol 5 |
+| `surface-exited` | subscribe | `surface` | protocol 5; hosted `runtime_ms` in protocol 10 |
 | `title-changed` | subscribe | `surface` | protocol 5 |
 | `bell` | subscribe | `surface` | protocol 5 |
 | `notification` | subscribe, byte attach, browser attach | `notification` | protocol 6; optional related `surface` |
@@ -60,7 +60,7 @@ Subscribe events belong to the `subscribe` registration. Tree lifecycle deltas b
 | `pairing-resolved` | trusted Unix subscribe | `request` | protocol 7 |
 | `status` | subscribe | session | protocol 5 internal status line |
 | `empty` | subscribe | session | protocol 5 |
-| `agent-state-changed` | subscribe | `surface` | proposed vNext |
+| `agent-state-changed` | subscribe | `surface` | protocol 12 |
 | `vt-state` | byte attach | `surface` | protocol 5 |
 | `resized` | byte attach | `surface` | protocol 6 |
 | `output` | byte attach | `surface` | protocol 5 |
@@ -92,13 +92,7 @@ Protocol v6 attach streams are ordered as `vt-state -> (resized | output | color
 
 Protocol v7 render attach streams are ordered as `render-state -> (render-delta | scroll-changed)* -> detached`. The initial state snapshot and render tap are registered under one terminal lock, matching the byte stream's no-gap/no-duplication guarantee. `render-delta` frames coalesce damage but preserve authoritative state order. See [`render.md`](render.md#stream-ordering).
 
-When a terminal resource exits, the mux atomically records its durable exit
-receipt and detaches every live tab placement. A terminal with several
-placements emits `surface-exited` once for each former legacy surface ID so
-existing per-placement subscribers invalidate every view. The receipt remains
-addressable through the terminal registry until `terminal.close` tombstones
-it, but no placement or live runtime remains. Browser surfaces and
-unregistered compatibility PTYs are also reaped on exit.
+When a non-hosted surface exits, the mux removes it from the tree itself before `surface-exited`. Hosted terminals instead remain as durable Exited tabs until an explicit close tombstones them. A frontend that auto-closes an established hosted process must therefore send that close mutation after receiving `surface-exited`; startup failures may remain visible for inspection.
 
 ## Subscribe Events
 
@@ -604,19 +598,15 @@ Example:
 Payload:
 
 ```text
-object{event:"surface-exited",surface:Id}
+object{event:"surface-exited",surface:Id,runtime_ms:uint64|null}
 ```
 
-Meaning: A PTY child exited or a browser surface was closed. A session-owned
-terminal retains a durable exit receipt until explicit `terminal.close`, while
-every placement and its live runtime are already removed. A projected terminal
-emits this event for each former placement. Browsers and unregistered
-compatibility PTYs are also already reaped from the tree.
+Meaning: A PTY child exited or a browser surface was closed. `runtime_ms` is the hosted child runtime in milliseconds and is `null` for browser and non-hosted surfaces. Hosted terminals remain in durable topology until an explicit close; clients connected to servers predating protocol 10 may receive this event without `runtime_ms`.
 
 Example:
 
 ```json
-{"event":"surface-exited","surface":1}
+{"event":"surface-exited","surface":1,"runtime_ms":321}
 ```
 
 ### title-changed
@@ -686,7 +676,7 @@ Example:
 {"event":"notification","notification":44,"title":"Build failed","body":"api tests failed","level":"error","surface":1}
 ```
 
-The same surface-scoped notification can also be delivered to byte and browser attachments. Protocol v10 does not tag the originating registration, so clients sharing one connection must deduplicate by notification id.
+The same surface-scoped notification can also be delivered to byte and browser attachments. Protocol v12 does not tag the originating registration, so clients sharing one connection must deduplicate by notification id.
 
 ### status
 
@@ -1012,15 +1002,15 @@ Example:
 {"event":"detached","surface":1}
 ```
 
-## Proposed Events
+## Protocol 12 Telemetry Events
 
 ### agent-state-changed
 
 | Field | Value |
 | --- | --- |
 | event | `agent-state-changed` |
-| status | proposed |
-| since | proposed protocol 10 |
+| status | implemented |
+| since | protocol 12 |
 
 Payload:
 
@@ -1028,10 +1018,19 @@ Payload:
 object{
   event:"agent-state-changed",
   surface:Id,
-  previous:"working"|"blocked"|"idle"|"done"|"unknown"|null,
-  state:"working"|"blocked"|"idle"|"done"|"unknown",
+  previous:"working"|"blocked"|"idle"|"done"|"error"|"unknown"|null,
+  state:"working"|"blocked"|"idle"|"done"|"error"|"unknown",
   source:"detected"|"socket"|"hook",
+  root_session?:bool,
   session:string|null,
+  root_session:boolean,
+  label?:string|null,
+  detail?:string|null,
+  started_at_ms?:uint64|null,
+  tasks_completed?:uint64|null,
+  tasks_total?:uint64|null,
+  jobs_running?:uint64|null,
+  agents_active?:uint64|null,
   updated_at_ms:uint64
 }
 ```
@@ -1041,16 +1040,16 @@ Meaning: The authoritative agent state for a surface changed. Hook-authority and
 Example:
 
 ```json
-{"event":"agent-state-changed","surface":1,"previous":"working","state":"blocked","source":"hook","session":"abc","updated_at_ms":1710000000000}
+{"event":"agent-state-changed","surface":1,"previous":"working","state":"blocked","source":"hook","root_session":true,"session":"abc","label":"root","detail":"awaiting approval","started_at_ms":1710000000000,"tasks_completed":3,"tasks_total":5,"jobs_running":0,"agents_active":2,"updated_at_ms":1710000001000}
 ```
 
-### notification vNext extension
+### notification subtitle extension
 
 | Field | Value |
 | --- | --- |
 | event | `notification` |
-| status | proposed |
-| since | proposed protocol 10 |
+| status | implemented |
+| since | protocol 6; optional `subtitle` protocol 12 |
 
 Payload:
 
@@ -1059,10 +1058,10 @@ object{
   event:"notification",
   notification:Id,
   title:string,
+  subtitle?:string|null,
   body:string,
   level:"info"|"warning"|"error",
   surface:Id|null,
-  created_at_ms:uint64
 }
 ```
 
@@ -1071,7 +1070,7 @@ Meaning: A notification was posted by `notify`, a hook, or an internal mux actio
 Example:
 
 ```json
-{"event":"notification","notification":44,"title":"Build failed","body":"api tests failed","level":"error","surface":1,"created_at_ms":1710000000000}
+{"event":"notification","notification":44,"title":"Build","subtitle":"Error","body":"api tests failed","level":"error","surface":1}
 ```
 
 ## Surface-Scoped Subscriptions and Proposed Filters

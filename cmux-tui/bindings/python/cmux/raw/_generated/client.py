@@ -174,8 +174,8 @@ class GeneratedClientMixin:
     def new_workspace(self, *, name: Union[str, None, MissingType] = MISSING, cols: Union[int, None, MissingType] = MISSING, rows: Union[int, None, MissingType] = MISSING) -> SurfaceResult:
         return self._invoke_command('new-workspace', NewWorkspaceRequest(name=name, cols=cols, rows=rows))
 
-    def notify(self, title: str, body: str, *, level: Union[NotificationLevel, None, MissingType] = MISSING, surface: Union[Id, None, MissingType] = MISSING) -> NotifyResult:
-        return self._invoke_command('notify', NotifyRequest(title=title, body=body, level=level, surface=surface))
+    def notify(self, title: str, body: str, *, level: Union[NotificationLevel, None, MissingType] = MISSING, surface: Union[Id, None, MissingType] = MISSING, subtitle: Union[str, None, MissingType] = MISSING) -> NotifyResult:
+        return self._invoke_command('notify', NotifyRequest(title=title, body=body, level=level, surface=surface, subtitle=subtitle))
 
     def pairing_response(self, request: int, approve: bool) -> EmptyResult:
         return self._invoke_command('pairing-response', PairingResponseRequest(request=request, approve=approve))
@@ -225,8 +225,8 @@ class GeneratedClientMixin:
     def rename_workspace(self, name: str, *, workspace: Union[Id, None, MissingType] = MISSING, key: Union[str, None, MissingType] = MISSING, expected_revision: Union[int, None, MissingType] = MISSING, expected_generation: Union[str, None, MissingType] = MISSING, origin: Union[str, None, MissingType] = MISSING, mutation_id: Union[str, None, MissingType] = MISSING) -> WorkspaceMutationResult:
         return self._invoke_command('rename-workspace', RenameWorkspaceRequest(name=name, workspace=workspace, key=key, expected_revision=expected_revision, expected_generation=expected_generation, origin=origin, mutation_id=mutation_id))
 
-    def report_agent(self, surface: Id, state: AgentState, source: AgentReportSource, *, session: Union[str, None, MissingType] = MISSING) -> ReportAgentResult:
-        return self._invoke_command('report-agent', ReportAgentRequest(surface=surface, state=state, source=source, session=session))
+    def report_agent(self, surface: Id, state: AgentState, source: AgentReportSource, *, session: Union[str, None, MissingType] = MISSING, agents_active: Union[int, None, MissingType] = MISSING, detail: Union[str, None, MissingType] = MISSING, jobs_running: Union[int, None, MissingType] = MISSING, label: Union[str, None, MissingType] = MISSING, root_session: Union[bool, MissingType] = MISSING, started_at_ms: Union[int, None, MissingType] = MISSING, tasks_completed: Union[int, None, MissingType] = MISSING, tasks_total: Union[int, None, MissingType] = MISSING) -> ReportAgentResult:
+        return self._invoke_command('report-agent', ReportAgentRequest(surface=surface, state=state, source=source, session=session, agents_active=agents_active, detail=detail, jobs_running=jobs_running, label=label, root_session=root_session, started_at_ms=started_at_ms, tasks_completed=tasks_completed, tasks_total=tasks_total))
 
     def resize_attached_view(self, surface: Id, cols: int, lease: str, rows: int) -> AttachedViewResizeResult:
         return self._invoke_command('resize-attached-view', ResizeAttachedViewRequest(surface=surface, cols=cols, lease=lease, rows=rows))

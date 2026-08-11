@@ -129,7 +129,7 @@ Unix session socket.
 
 ## Raw API
 
-Existing raw callers can migrate imports without changing behavior:
+Existing protocol-v12 callers can migrate imports without changing behavior:
 
 ```java
 import com.cmux.raw.CmuxClient;

@@ -402,17 +402,17 @@ TEST("session auxiliary APIs emit typed notification and agent routes") {
         state,
         response(
             "cpp-request-1",
-            R"([{"id":"notification_11111111111111111111111111111111","session_id":"session_22222222222222222222222222222222","title":"queued","body":"waiting","level":"info","created_at_ms":"19","unread":true}])"));
+            R"([{"id":"notification_11111111111111111111111111111111","session_id":"session_22222222222222222222222222222222","title":"queued","subtitle":null,"body":"waiting","level":"info","created_at_ms":"19","unread":true}])"));
     enqueue(
         state,
         response(
             "cpp-request-2",
-            R"({"value":{"id":"notification_33333333333333333333333333333333","session_id":"session_22222222222222222222222222222222","title":"build","body":"failed","level":"warning","terminal_id":"term_44444444444444444444444444444444","created_at_ms":"20","unread":true},"generation":"g","revision":"21","replayed":false})"));
+            R"({"value":{"id":"notification_33333333333333333333333333333333","session_id":"session_22222222222222222222222222222222","title":"build","subtitle":null,"body":"failed","level":"warning","terminal_id":"term_44444444444444444444444444444444","created_at_ms":"20","unread":true},"generation":"g","revision":"21","replayed":false})"));
     enqueue(
         state,
         response(
             "cpp-request-3",
-            R"({"value":{"id":"agent_55555555555555555555555555555555","session_id":"session_22222222222222222222222222222222","terminal_id":"term_44444444444444444444444444444444","state":"working","source":"socket","updated_at_ms":"21","source_session":"codex-task-42"},"generation":"g","revision":"22","replayed":false})"));
+            R"({"value":{"id":"agent_55555555555555555555555555555555","session_id":"session_22222222222222222222222222222222","terminal_id":"term_44444444444444444444444444444444","state":"error","source":"detected","updated_at_ms":"21","source_session":"codex-task-42","root_session":true,"label":"coordinator","detail":null,"started_at_ms":"1700000000000","tasks_completed":"3","tasks_total":"8","jobs_running":"2","agents_active":"4"},"generation":"g","revision":"22","replayed":false})"));
 
     auto machine_id = cmux::MachineId::parse(
         "machine_11111111111111111111111111111111");
@@ -433,8 +433,10 @@ TEST("session auxiliary APIs emit typed notification and agent routes") {
     CHECK_EQ(
         notifications.value().front().level,
         cmux::NotificationLevel::info);
+    CHECK(!notifications.value().front().subtitle.has_value());
 
     cmux::NotificationCreateOptions notification("build", "failed");
+    notification.subtitle.emplace(std::nullopt);
     notification.level = cmux::NotificationLevel::warning;
     notification.terminal_id = terminal_id.value();
     auto notification_key =
@@ -448,12 +450,21 @@ TEST("session auxiliary APIs emit typed notification and agent routes") {
     CHECK_EQ(
         created.value().value.level,
         cmux::NotificationLevel::warning);
+    CHECK(!created.value().value.subtitle.has_value());
 
     cmux::AgentReportOptions report(
         terminal_id.value(),
-        cmux::AgentState::working,
+        cmux::AgentState::error,
         cmux::AgentReportSource::socket);
     report.source_session = "codex-task-42";
+    report.root_session = true;
+    report.label = "coordinator";
+    report.detail = "triaging";
+    report.started_at_ms = 1'700'000'000'000ULL;
+    report.tasks_completed = 3;
+    report.tasks_total = 8;
+    report.jobs_running = 2;
+    report.agents_active = 4;
     auto agent_key = cmux::MutationOptions::with_key("agent-report-1");
     CHECK(agent_key);
     auto reported = session.report_agent(
@@ -461,8 +472,20 @@ TEST("session auxiliary APIs emit typed notification and agent routes") {
         std::move(agent_key).value().expecting(21));
     CHECK(reported);
     CHECK_EQ(reported.value().revision, 22U);
-    CHECK_EQ(reported.value().value.state, cmux::AgentState::working);
-    CHECK_EQ(reported.value().value.source, cmux::AgentSource::socket);
+    CHECK_EQ(reported.value().value.state, cmux::AgentState::error);
+    CHECK_EQ(reported.value().value.source, cmux::AgentSource::detected);
+    CHECK(reported.value().value.root_session);
+    CHECK_EQ(
+        reported.value().value.label.value(),
+        std::string("coordinator"));
+    CHECK(!reported.value().value.detail.has_value());
+    CHECK_EQ(
+        reported.value().value.started_at_ms.value(),
+        1'700'000'000'000ULL);
+    CHECK_EQ(reported.value().value.tasks_completed.value(), 3U);
+    CHECK_EQ(reported.value().value.tasks_total.value(), 8U);
+    CHECK_EQ(reported.value().value.jobs_running.value(), 2U);
+    CHECK_EQ(reported.value().value.agents_active.value(), 4U);
 
     std::lock_guard lock(state->mutex);
     CHECK_EQ(state->outgoing.size(), 3U);
@@ -506,6 +529,7 @@ TEST("session auxiliary APIs emit typed notification and agent routes") {
     CHECK_EQ(
         create_params->at("body").as_string().value(),
         std::string_view("failed"));
+    CHECK(create_params->at("subtitle").is_null());
     CHECK_EQ(
         create_params->at("level").as_string().value(),
         std::string_view("warning"));
@@ -535,13 +559,35 @@ TEST("session auxiliary APIs emit typed notification and agent routes") {
             "term_44444444444444444444444444444444"));
     CHECK_EQ(
         report_params->at("state").as_string().value(),
-        std::string_view("working"));
+        std::string_view("error"));
     CHECK_EQ(
         report_params->at("source").as_string().value(),
         std::string_view("socket"));
     CHECK_EQ(
         report_params->at("source_session").as_string().value(),
         std::string_view("codex-task-42"));
+    CHECK(report_params->at("root_session").as_bool().value());
+    CHECK_EQ(
+        report_params->at("label").as_string().value(),
+        std::string_view("coordinator"));
+    CHECK_EQ(
+        report_params->at("detail").as_string().value(),
+        std::string_view("triaging"));
+    CHECK_EQ(
+        report_params->at("started_at_ms").as_string().value(),
+        std::string_view("1700000000000"));
+    CHECK_EQ(
+        report_params->at("tasks_completed").as_string().value(),
+        std::string_view("3"));
+    CHECK_EQ(
+        report_params->at("tasks_total").as_string().value(),
+        std::string_view("8"));
+    CHECK_EQ(
+        report_params->at("jobs_running").as_string().value(),
+        std::string_view("2"));
+    CHECK_EQ(
+        report_params->at("agents_active").as_string().value(),
+        std::string_view("4"));
     CHECK_EQ(
         report_params->at("expected_revision").as_string().value(),
         std::string_view("21"));

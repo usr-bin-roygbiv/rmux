@@ -336,6 +336,9 @@ public final class Session {
         Map<String, Object> params = withExtra(route.params(), options.mutation().extra());
         params.put(Wire.TITLE, options.title());
         params.put(Wire.BODY, options.body());
+        if (options.subtitle().present()) {
+            params.put("subtitle", options.subtitle().toWire());
+        }
         options.level().ifPresent(level -> params.put(Wire.LEVEL, level));
         options.terminalId().ifPresent(
             terminalId -> params.put("terminal_id", terminalId)
@@ -372,6 +375,30 @@ public final class Session {
         options.sourceSession().ifPresent(
             value -> params.put("source_session", value)
         );
+        options.rootSession().ifPresent(
+            value -> params.put("root_session", value)
+        );
+        if (options.label().present()) {
+            params.put("label", options.label().toWire());
+        }
+        if (options.detail().present()) {
+            params.put("detail", options.detail().toWire());
+        }
+        if (options.startedAtMS().present()) {
+            params.put("started_at_ms", options.startedAtMS().toWire());
+        }
+        if (options.tasksCompleted().present()) {
+            params.put("tasks_completed", options.tasksCompleted().toWire());
+        }
+        if (options.tasksTotal().present()) {
+            params.put("tasks_total", options.tasksTotal().toWire());
+        }
+        if (options.jobsRunning().present()) {
+            params.put("jobs_running", options.jobsRunning().toWire());
+        }
+        if (options.agentsActive().present()) {
+            params.put("agents_active", options.agentsActive().toWire());
+        }
         Client.MutationResponse response = client.mutation(
             Operations.AGENT_REPORT, params, options.mutation()
         );

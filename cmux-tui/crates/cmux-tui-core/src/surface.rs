@@ -41,11 +41,12 @@ use crate::browser::{
     BrowserMouseDispatch, BrowserPointerOwner, BrowserResizeWaiter, BrowserSurface,
     PendingBrowserResize,
 };
+use crate::terminal_host_protocol::BracketedPaste;
 #[cfg(all(unix, test))]
 use crate::terminal_host_protocol::PROTOCOL_VERSION;
 #[cfg(unix)]
 use crate::terminal_host_protocol::{
-    CLEAR_HISTORY_ACK_OK, FLAG_COLORS_FOLLOW, Frame, MessageKind, decode_terminal_exit,
+    CLEAR_HISTORY_ACK_OK, FLAG_COLORS_FOLLOW, Frame, MessageKind, decode_terminal_exit_frame,
 };
 use cmux_tui_cdp::BrowserMode;
 
@@ -90,6 +91,7 @@ pub enum PointerSnapshotProbe {
     /// Terminal parsing currently owns a required state lock.
     Contended,
 }
+pub const DEFAULT_SCROLLBACK_LIMIT_BYTES: usize = 50_000_000;
 
 /// How to spawn surface children.
 #[derive(Debug, Clone)]
@@ -102,6 +104,7 @@ pub struct SurfaceOptions {
     pub term: String,
     pub cols: u16,
     pub rows: u16,
+    /// Maximum retained scrollback backing storage in bytes.
     pub scrollback: usize,
     /// Extra environment for children (e.g. CMUX_TUI_SOCKET).
     pub extra_env: Vec<(String, String)>,
@@ -140,7 +143,7 @@ impl Default for SurfaceOptions {
                 .unwrap_or_else(|_| "xterm-256color".into()),
             cols: 80,
             rows: 24,
-            scrollback: 10_000,
+            scrollback: DEFAULT_SCROLLBACK_LIMIT_BYTES,
             extra_env: Vec::new(),
             chrome_binary: None,
             cdp_url: None,
@@ -321,7 +324,10 @@ enum HostedTransition {
         colors: TerminalColorOverrides,
     },
     Metadata(MessageKind),
-    Exit(TerminalExit),
+    Exit {
+        exit: TerminalExit,
+        runtime_ms: Option<u64>,
+    },
     ResyncRequired,
 }
 
@@ -465,12 +471,13 @@ impl HostedFrameStager {
                 Ok(Some(HostedTransition::Metadata(frame.kind)))
             }
             MessageKind::Exit if frame.flags == 0 => {
-                let exit = if frame.payload.is_empty() {
-                    TerminalExit::unknown("terminal host omitted exit status")
+                let (exit, runtime_ms) = if frame.payload.is_empty() {
+                    (TerminalExit::unknown("terminal host omitted exit status"), None)
                 } else {
-                    decode_terminal_exit(&frame.payload).map_err(|_| "invalid Exit payload")?
+                    decode_terminal_exit_frame(&frame.payload)
+                        .map_err(|_| "invalid Exit payload")?
                 };
-                Ok(Some(HostedTransition::Exit(exit)))
+                Ok(Some(HostedTransition::Exit { exit, runtime_ms }))
             }
             MessageKind::ResyncRequired if frame.flags == 0 => {
                 Ok(Some(HostedTransition::ResyncRequired))
@@ -3220,8 +3227,8 @@ impl Surface {
                             // the sequenced metadata frames are still consumed so
                             // they cannot hide a stream gap.
                             HostedTransition::Metadata(_kind) => {}
-                            HostedTransition::Exit(exit) => {
-                                received_exit = Some(exit);
+                            HostedTransition::Exit { exit, runtime_ms } => {
+                                received_exit = Some((exit, runtime_ms));
                                 break;
                             }
                             HostedTransition::ResyncRequired => {
@@ -3238,14 +3245,18 @@ impl Surface {
                         return;
                     }
                     let Some(identity) = pty.host_identity.clone() else { return };
-                    if let Some(exit) = received_exit {
+                    if let Some((exit, runtime_ms)) = received_exit {
                         *pty.exit.lock().unwrap() = Some(exit);
                         mark_hosted_runtime_exited(pty, &identity);
                         pty.host_connection_state
                             .store(TerminalHostConnectionState::Exited as u8, Ordering::Release);
                         pty.stream_progress.notify();
                         if let Some(mux) = mux.upgrade() {
-                            mux.surface_exited(surface.id);
+                            mux.surface_exited_with_runtime(
+                                surface.id,
+                                Some(identity),
+                                runtime_ms,
+                            );
                         }
                         return;
                     }
@@ -4234,21 +4245,23 @@ impl Surface {
 
     /// Write a protocol input payload, conditionally applying bracketed-paste
     /// markers from a terminal-mode snapshot taken before the PTY write.
-    pub fn write_paste(&self, bytes: &[u8]) -> std::io::Result<()> {
+    pub fn write_paste(&self, raw_bytes: &[u8]) -> std::io::Result<()> {
+        let paste = BracketedPaste::new(raw_bytes);
+
         let Some(pty) = self.as_pty() else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "browser surface does not accept PTY bytes",
             ));
         };
-        if bytes.is_empty() {
+        if paste.is_empty() {
             return Ok(());
         }
         #[cfg(unix)]
         {
             let runtime = pty.runtime.lock().unwrap();
             if let PtyRuntime::Hosted(host) = &*runtime {
-                return host.send(MessageKind::Paste, bytes);
+                return host.send(MessageKind::Paste, paste.as_bytes());
             }
             if matches!(&*runtime, PtyRuntime::ExitedHosted) {
                 return Err(std::io::Error::new(
@@ -4257,21 +4270,14 @@ impl Surface {
                 ));
             }
         }
-        let bracketed = {
-            let term = pty.term.lock().unwrap();
-            term.mode(2004, false)
-        };
+        let bracketed = pty.term.lock().unwrap().mode(2004, false);
+        let encoded = paste.encoded(bracketed);
         let mut runtime = pty.runtime.lock().unwrap();
         let PtyRuntime::Local { writer, .. } = &mut *runtime else {
             unreachable!("hosted paste returned above")
         };
-        if bracketed {
-            writer.write_all(b"\x1b[200~")?;
-        }
-        writer.write_all(bytes)?;
-        if bracketed {
-            writer.write_all(b"\x1b[201~")?;
-        }
+
+        writer.write_all(encoded.as_ref())?;
         writer.flush()
     }
 
@@ -5364,6 +5370,13 @@ impl Surface {
         match self {
             Surface::Pty(pty) => pty.dead.load(Ordering::Acquire),
             Surface::Browser(browser) => browser.is_dead(),
+        }
+    }
+
+    pub(crate) fn terminal_owner_detaching(&self) -> bool {
+        match self {
+            Surface::Pty(pty) => pty.owner_detaching.load(Ordering::Acquire),
+            Surface::Browser(_) => false,
         }
     }
 
@@ -6950,6 +6963,21 @@ mod tests {
             .expect("macOS surface PTY spawn failed");
     }
 
+    #[test]
+    fn default_scrollback_retains_long_agent_transcript() {
+        let options = SurfaceOptions::default();
+        let mut terminal =
+            Terminal::new(options.cols, options.rows, options.scrollback, Callbacks::default())
+                .unwrap();
+        for line in 0..20_000 {
+            terminal.vt_write(format!("omp-history-{line:05} {}\r\n", "x".repeat(64)).as_bytes());
+        }
+
+        let scrollback = terminal.plain_text().unwrap();
+        assert!(scrollback.contains("omp-history-00000"));
+        assert!(scrollback.contains("omp-history-19999"));
+    }
+
     #[derive(Clone, Default)]
     struct CapturingWriter(Arc<Mutex<Vec<u8>>>);
 
@@ -7338,7 +7366,7 @@ mod tests {
                 Ok(AttachFrame::OutputWithColors { .. }) => {
                     panic!("local PTYs must use ordered Output then ColorsChanged")
                 }
-                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => {
                     panic!("local cursor activity stream disconnected")
                 }
@@ -7816,58 +7844,34 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn smart_hosted_stager_orders_raw_output_and_incremental_resize() {
-        let mut stager = HostedFrameStager::new(7, true);
-        let mut prefix = Frame::new(MessageKind::Output, vec![0xce]);
-        prefix.sequence = 8;
-        assert!(matches!(
-            stager.push(prefix).unwrap(),
-            Some(HostedTransition::Output(bytes)) if bytes == vec![0xce]
-        ));
-
-        let mut resized = Frame::new(MessageKind::Resized, vec![100, 0, 30, 0]);
-        resized.sequence = 9;
-        assert!(matches!(
-            stager.push(resized).unwrap(),
-            Some(HostedTransition::Resized { cols: 100, rows: 30, cell_pixels: None })
-        ));
-
-        let mut metrics = Frame::new(MessageKind::Resized, vec![100, 0, 30, 0, 9, 0, 18, 0]);
-        metrics.sequence = 10;
-        assert!(matches!(
-            stager.push(metrics).unwrap(),
-            Some(HostedTransition::Resized { cols: 100, rows: 30, cell_pixels: Some((9, 18)) })
-        ));
-
-        let mut suffix = Frame::new(MessageKind::Output, vec![0xbb]);
-        suffix.sequence = 11;
-        assert!(matches!(
-            stager.push(suffix).unwrap(),
-            Some(HostedTransition::Output(bytes)) if bytes == vec![0xbb]
-        ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn hosted_stager_decodes_authoritative_exit_payload() {
+    fn hosted_stager_decodes_authoritative_exit_with_runtime_and_legacy_payload() {
         let exit = TerminalExit {
             outcome: crate::terminal_host_protocol::TerminalExitOutcome::Exit { code: 17 },
             exited_at_ms: 1_234_567,
         };
         let mut frame = Frame::new(
             MessageKind::Exit,
-            crate::terminal_host_protocol::encode_terminal_exit(&exit),
+            crate::terminal_host_protocol::encode_terminal_exit_with_runtime(&exit, 321),
         );
         frame.sequence = 1;
-        let mut stager = HostedFrameStager::new(0, false);
-        match stager.push(frame).unwrap() {
-            Some(HostedTransition::Exit(observed)) => assert_eq!(observed, exit),
+        match HostedFrameStager::new(0, false).push(frame).unwrap() {
+            Some(HostedTransition::Exit { exit: observed, runtime_ms }) => {
+                assert_eq!(observed, exit);
+                assert_eq!(runtime_ms, Some(321));
+            }
             other => panic!("unexpected staged transition: {other:?}"),
         }
 
-        let mut malformed = Frame::new(MessageKind::Exit, vec![1, 0, 2]);
-        malformed.sequence = 1;
-        assert!(HostedFrameStager::new(0, false).push(malformed).is_err());
+        let mut legacy_exit = Frame::new(MessageKind::Exit, Vec::new());
+        legacy_exit.sequence = 1;
+        assert!(matches!(
+            HostedFrameStager::new(0, false).push(legacy_exit).unwrap(),
+            Some(HostedTransition::Exit { runtime_ms: None, .. })
+        ));
+
+        let mut malformed_exit = Frame::new(MessageKind::Exit, vec![0; 7]);
+        malformed_exit.sequence = 1;
+        assert!(HostedFrameStager::new(0, false).push(malformed_exit).is_err());
     }
 
     #[cfg(unix)]
@@ -8482,7 +8486,9 @@ mod tests {
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             match events.recv_timeout(remaining) {
-                Ok(MuxEvent::SurfaceExited(id)) if id == placement.surface => break,
+                Ok(MuxEvent::SurfaceExited { surface, .. }) if surface == placement.surface => {
+                    break;
+                }
                 Ok(_) => {}
                 Err(error) => panic!("surface did not exit before frame worker release: {error}"),
             }

@@ -14,19 +14,21 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
-use cmux_tui_core::resource::FrontendProjectionPublicId;
+use cmux_tui_core::resource::{FrontendProjectionPublicId, TerminalPublicId};
+use cmux_tui_core::terminal_host_protocol::BracketedPaste;
 use cmux_tui_core::{
-    BrowserFrame, BrowserSource, BrowserStatus, ClearHistoryDelivery, ClearHistoryFailure,
-    DEFAULT_VIEWPORT_PANE_WIDTH, Direction, FrontendFocusTarget, FrontendJournalEvent,
-    GraphicsStatus, GuardedMouseEncode, LayoutUndoError, LayoutUndoResult, MAX_VIEWPORT_PANE_WIDTH,
-    MIN_VIEWPORT_PANE_WIDTH, Mux, MuxEvent, Node, PairingChallenge, PaneId, PointerSemanticProbe,
-    PointerSnapshotProbe, Rect, ScreenId, SplitDir, SplitEdge, SplitId, SurfaceId, SurfaceKind,
-    TerminalPointerSnapshot, ViewportColumn, ViewportLayoutResult, VirtualRect, WorkspaceId,
-    ZoomMode, exact_split_for_pane_edge, exact_split_for_pane_edge_with_viewport, layout_screen,
-    layout_screen_with_viewport, split_sides, zellij_default_pane_layout,
+    AgentRecord, AgentState, BrowserFrame, BrowserSource, BrowserStatus, ClearHistoryDelivery,
+    ClearHistoryFailure, DEFAULT_VIEWPORT_PANE_WIDTH, Direction, FrontendFocusTarget,
+    FrontendJournalEvent, GraphicsStatus, GuardedMouseEncode, LayoutUndoError, LayoutUndoResult,
+    MAX_VIEWPORT_PANE_WIDTH, MIN_VIEWPORT_PANE_WIDTH, Mux, MuxEvent, Node, NotificationEvent,
+    PairingChallenge, PaneId, PointerSemanticProbe, PointerSnapshotProbe, Rect, ScreenId, SplitDir,
+    SplitEdge, SplitId, SurfaceId, SurfaceKind, TerminalPointerSnapshot, ViewportColumn,
+    ViewportLayoutResult, VirtualRect, WorkspaceId, ZoomMode, exact_split_for_pane_edge,
+    exact_split_for_pane_edge_with_viewport, layout_screen, layout_screen_with_viewport,
+    split_sides, zellij_default_pane_layout,
 };
 use crossterm::ExecutableCommand;
 use crossterm::event::{
@@ -74,9 +76,9 @@ use crate::pty_input::{
 };
 use crate::session::tree::{PaneView, ScreenView};
 use crate::session::{
-    AgentInfo, AmbiguousCreation, CLEAR_HISTORY_UNSUPPORTED_ERROR, ClientInfo, CreationReceipt,
-    Session, SidebarPluginSurface, SurfaceAttach, SurfaceHandle, TreeView,
-    is_remote_surface_unavailable, is_remote_timeout, is_remote_transport_failure,
+    AmbiguousCreation, CLEAR_HISTORY_UNSUPPORTED_ERROR, ClientInfo, CreationReceipt, Session,
+    SidebarPluginSurface, SurfaceAttach, SurfaceHandle, TreeView, is_remote_timeout,
+    is_remote_transport_failure, is_surface_unavailable,
 };
 use crate::sidebar_files::{FileBrowser, FileCommand, file_url, shell_single_quote};
 use crate::sidebar_projection::{
@@ -107,6 +109,7 @@ const MACHINE_PROVIDER_RECONNECT_MAX_BACKOFF_EXPONENT: u8 = 5;
 const DURABLE_NOTICE_RECENT_CAPACITY: usize = 64;
 const DURABLE_NOTICE_QUEUE_CAPACITY: usize = 64;
 const DURABLE_NOTICE_DISPLAY_DURATION: Duration = Duration::from_secs(4);
+const NOTIFICATION_BANNER_DISPLAY_DURATION: Duration = Duration::from_secs(4);
 const DURABLE_NOTICE_ACK_MAX_BACKOFF_EXPONENT: u8 = 5;
 
 #[derive(Debug, Clone)]
@@ -293,10 +296,9 @@ impl SessionEventSender {
     fn accepts_mux_event(&self, event: &MuxEvent) -> bool {
         let Some(filter) = self.surface_filter else { return true };
         match event {
-            MuxEvent::SurfaceOutput(surface)
-            | MuxEvent::SurfaceExited(surface)
-            | MuxEvent::Bell(surface) => *surface == filter,
-            MuxEvent::SurfaceResized { surface, .. }
+            MuxEvent::SurfaceOutput(surface) | MuxEvent::Bell(surface) => *surface == filter,
+            MuxEvent::SurfaceExited { surface, .. }
+            | MuxEvent::SurfaceResized { surface, .. }
             | MuxEvent::SurfaceResizeFailed { surface, .. }
             | MuxEvent::AgentChanged { surface, .. }
             | MuxEvent::TitleChanged { surface, .. }
@@ -304,6 +306,7 @@ impl SessionEventSender {
             MuxEvent::Notification(notification) => {
                 notification.surface.is_none_or(|surface| surface == filter)
             }
+            MuxEvent::AgentStateChanged { record, .. } => record.surface == filter,
             _ => true,
         }
     }
@@ -709,7 +712,7 @@ fn forward_mux_event(
             Err(_) => ForwardMuxOutcome::Stop,
         };
     }
-    if let MuxEvent::SurfaceExited(surface) = &event {
+    if let MuxEvent::SurfaceExited { surface, .. } = &event {
         mux_titles.remove(*surface);
     }
     let terminal = matches!(event, MuxEvent::Empty);
@@ -1498,7 +1501,7 @@ fn perform_surface_attach(
                 requested_size: size,
             }
         }
-        Err(error) if is_remote_surface_unavailable(&error, id) => {
+        Err(error) if is_surface_unavailable(&error, id) => {
             retire_missing_surface_attach(
                 session,
                 retired_surfaces,
@@ -2011,12 +2014,16 @@ impl OrderedSession {
         self.inner.tree()
     }
 
-    fn agents(&self) -> Vec<AgentInfo> {
+    fn respond_pairing(&self, request: u64, approve: bool) -> anyhow::Result<()> {
+        self.inner.respond_pairing(request, approve)
+    }
+
+    fn agents(&self) -> anyhow::Result<Vec<AgentRecord>> {
         self.inner.agents()
     }
 
-    fn respond_pairing(&self, request: u64, approve: bool) -> anyhow::Result<()> {
-        self.inner.respond_pairing(request, approve)
+    fn sidebar_agents(&self) -> Vec<crate::session::AgentInfo> {
+        self.inner.sidebar_agents()
     }
 
     fn refresh_clients_background(&self) {
@@ -2323,25 +2330,25 @@ impl OrderedSession {
                 // ordered worker is waiting to attach. In that case the
                 // missing mirror is the expected result of teardown, not a
                 // retryable synchronization failure.
-                let attach_claims = attach_claims.lock().unwrap();
-                let retired = attach_claims.get(&id).is_some_and(|claim| claim.retired);
+                let attach_claims_guard = attach_claims.lock().unwrap();
+                let retired = attach_claims_guard.get(&id).is_some_and(|claim| claim.retired);
                 match result {
                     Ok(SurfaceAttach::Attached(_)) => {
                         attach_failures.lock().unwrap().remove(&id);
                         pending.defer(SessionMutationOutcome::Success { tree: None });
-                        drop(attach_claims);
+                        drop(attach_claims_guard);
                         Ok(())
                     }
                     Ok(SurfaceAttach::Retired | SurfaceAttach::Deferred) => {
                         attach_failures.lock().unwrap().remove(&id);
                         pending.defer(SessionMutationOutcome::Success { tree: None });
-                        drop(attach_claims);
+                        drop(attach_claims_guard);
                         Ok(())
                     }
                     Ok(SurfaceAttach::Missing) if retired => {
                         attach_failures.lock().unwrap().remove(&id);
                         pending.defer(SessionMutationOutcome::Success { tree: None });
-                        drop(attach_claims);
+                        drop(attach_claims_guard);
                         Ok(())
                     }
                     Ok(SurfaceAttach::Missing) => {
@@ -2356,13 +2363,19 @@ impl OrderedSession {
                             error: format!("surface {id} is unavailable"),
                             reconnect_required: false,
                         });
-                        drop(attach_claims);
+                        drop(attach_claims_guard);
                         Ok(())
                     }
-                    Err(error) if retired && is_remote_surface_unavailable(&error, id) => {
-                        attach_failures.lock().unwrap().remove(&id);
+                    Err(error) if is_surface_unavailable(&error, id) => {
+                        drop(attach_claims_guard);
+                        retire_missing_surface_attach(
+                            &session,
+                            &retired_surfaces,
+                            &attach_claims,
+                            &attach_failures,
+                            id,
+                        );
                         pending.defer(SessionMutationOutcome::Success { tree: None });
-                        drop(attach_claims);
                         Ok(())
                     }
                     Err(error) => {
@@ -2382,7 +2395,7 @@ impl OrderedSession {
                             error: error.to_string(),
                             reconnect_required: timed_out,
                         });
-                        drop(attach_claims);
+                        drop(attach_claims_guard);
                         if timed_out || transport_failed { Err(error) } else { Ok(()) }
                     }
                 }
@@ -2987,6 +3000,11 @@ impl OrderedSession {
                         pending.defer(SessionMutationOutcome::Success { tree: None });
                         Ok(())
                     }
+                    Err(error) if is_surface_unavailable(&error, surface_id) => {
+                        failures.lock().unwrap().remove(&surface_id);
+                        pending.defer(SessionMutationOutcome::Success { tree: None });
+                        Ok(())
+                    }
                     Err(error) => {
                         let transient =
                             is_remote_timeout(&error) || is_remote_transport_failure(&error);
@@ -3504,6 +3522,30 @@ impl OrderedSession {
     pub fn close_surface(&self, surface: SurfaceId) {
         self.enqueue_destination_mutation("close tab", move |session| {
             session.close_surface(surface)
+        });
+    }
+
+    fn close_established_exited_surface(&self, workspace: WorkspaceId, terminal: TerminalPublicId) {
+        self.enqueue_destination_mutation("close exited terminal", move |session| {
+            let has_surviving_tab = session
+                .refresh_tree()
+                .ok()
+                .and_then(|tree| {
+                    tree.workspaces.into_iter().find(|candidate| candidate.id == workspace)
+                })
+                .is_none_or(|workspace| {
+                    workspace
+                        .screens
+                        .iter()
+                        .flat_map(|screen| &screen.panes)
+                        .flat_map(|pane| &pane.tabs)
+                        .any(|tab| tab.terminal_id.as_ref() != Some(&terminal))
+                });
+            if has_surviving_tab {
+                session.close_terminal(&terminal)
+            } else {
+                session.close_workspace(workspace)
+            }
         });
     }
 
@@ -5101,6 +5143,11 @@ pub struct Toast {
     deadline: Instant,
 }
 
+pub struct NotificationBanner {
+    pub event: NotificationEvent,
+    deadline: Instant,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct BrowserMouseDispatch {
     event_type: &'static str,
@@ -6595,6 +6642,9 @@ pub struct App {
     default_colors: cmux_tui_core::DefaultColors,
     pub tree: TreeView,
     tab_locations: HashMap<SurfaceId, [usize; 4]>,
+    pub(crate) agent_records: HashMap<SurfaceId, AgentRecord>,
+    agent_observed_at_ms: HashMap<SurfaceId, u64>,
+    last_agent_elapsed_second: Option<u64>,
     pub render_states: HashMap<SurfaceId, RenderState>,
     pub(crate) chrome_row_scratch: ReusableRowBuffer,
     /// Terminal grid dimensions from the frame actually drawn for each
@@ -6683,10 +6733,11 @@ pub struct App {
     sidebar_plugin_retry_at: Option<Instant>,
     sidebar_width_override: Option<u16>,
     machine_sidebar_width_override: Option<u16>,
+    /// Host grid used to compute the cached sidebar and pane rectangles.
     tabs_sidebar_width_override: Option<u16>,
     projection_sidebar_width_overrides: HashMap<String, u16>,
-    /// Session-local visibility overrides, keyed by profile and stable view id.
     hidden_sidebar_views: HashMap<String, HashSet<String>>,
+    pub(crate) frame_layout_size: Option<(u16, u16)>,
     /// Pane region of the current frame (screen minus sidebar/status).
     pub content_area: Rect,
     /// Clickable regions of the current frame, rebuilt by the renderers.
@@ -6709,6 +6760,7 @@ pub struct App {
     pub shortcut_help: Option<ShortcutHelp>,
     pub omnibar: Option<OmnibarState>,
     pub toast: Option<Toast>,
+    pub(crate) notification_banner: Option<NotificationBanner>,
     pub(crate) shake_frames: u8,
     pub selection: Option<Selection>,
     selection_generation: u64,
@@ -8031,6 +8083,14 @@ fn run_with_machine_updates_inner(
     let owner_machine = owner_mux
         .as_ref()
         .and_then(|_| machine_ui.as_ref().and_then(|machine| machine.snapshot.active));
+    let agent_records: HashMap<SurfaceId, AgentRecord> = session
+        .agents()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|record| (record.surface, record))
+        .collect();
+    let agent_observed_at_ms =
+        agent_records.keys().copied().map(|surface| (surface, wall_clock_ms())).collect();
     let frontend_journal = match FrontendJournalWorker::spawn() {
         Ok(worker) => worker,
         Err(error) => return Err(terminal_restore.restore_after_error(error)),
@@ -8080,6 +8140,9 @@ fn run_with_machine_updates_inner(
         default_colors,
         tree: TreeView::default(),
         tab_locations: HashMap::new(),
+        agent_records,
+        agent_observed_at_ms,
+        last_agent_elapsed_second: None,
         render_states: HashMap::new(),
         chrome_row_scratch: ReusableRowBuffer::default(),
         rendered_terminal_sizes: HashMap::new(),
@@ -8150,6 +8213,7 @@ fn run_with_machine_updates_inner(
         tabs_sidebar_width_override: None,
         projection_sidebar_width_overrides: HashMap::new(),
         hidden_sidebar_views: HashMap::new(),
+        frame_layout_size: None,
         content_area: Rect::default(),
         hits: Vec::new(),
         tab_scroll: HashMap::new(),
@@ -8166,6 +8230,7 @@ fn run_with_machine_updates_inner(
         shortcut_help: None,
         omnibar: None,
         toast: None,
+        notification_banner: None,
         shake_frames: 0,
         selection: None,
         selection_generation: 0,
@@ -8589,6 +8654,17 @@ fn should_claim_clear_history_shortcut(
     surface_kind == SurfaceKind::Pty && supports_atomic_fallback
 }
 
+fn wall_clock_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
+}
+
+fn format_elapsed(seconds: u64, compact: bool, messages: &localization::AgentMessages) -> String {
+    messages.elapsed(seconds, compact)
+}
 impl App {
     pub fn is_surface_only(&self) -> bool {
         self.surface_only.is_some()
@@ -8606,6 +8682,122 @@ impl App {
 
     fn owner_shutdown_requested(&self) -> bool {
         self.owner_mux.as_ref().is_some_and(|mux| mux.daemon_shutdown_requested())
+    }
+    pub(crate) fn agent_record(&self, surface: SurfaceId) -> Option<&AgentRecord> {
+        self.agent_records.get(&surface)
+    }
+
+    fn is_omp_root_record(record: &AgentRecord) -> bool {
+        record.telemetry.root_session
+    }
+
+    fn omp_root_record(&self, surface: SurfaceId) -> Option<&AgentRecord> {
+        self.agent_record(surface).filter(|record| Self::is_omp_root_record(record))
+    }
+
+    pub(crate) fn omp_root_workspace_summary(
+        &self,
+        workspace: &crate::session::WorkspaceView,
+    ) -> Option<String> {
+        use std::fmt::Write as _;
+
+        let mut counts = [0usize; 6];
+        for record in workspace
+            .screens
+            .iter()
+            .flat_map(|screen| screen.panes.iter())
+            .flat_map(|pane| pane.tabs.iter())
+            .filter_map(|tab| self.omp_root_record(tab.surface))
+        {
+            match record.state {
+                AgentState::Done => counts[0] += 1,
+                AgentState::Blocked => counts[1] += 1,
+                AgentState::Working => counts[2] += 1,
+                AgentState::Idle => counts[3] += 1,
+                AgentState::Error => counts[4] += 1,
+                AgentState::Unknown => counts[5] += 1,
+            }
+        }
+
+        let mut summary = String::new();
+        for (count, label) in
+            counts.into_iter().zip(["completed", "waiting", "running", "idle", "failed", "stopped"])
+        {
+            if count == 0 {
+                continue;
+            }
+            if !summary.is_empty() {
+                summary.push_str(" · ");
+            }
+            write!(&mut summary, "{count} {label}").expect("writing to a String cannot fail");
+        }
+        (!summary.is_empty()).then_some(summary)
+    }
+
+    pub(crate) fn active_agent_record(&self) -> Option<&AgentRecord> {
+        self.tree.active_surface().and_then(|surface| self.agent_record(surface))
+    }
+
+    fn agent_elapsed_seconds(&self, record: &AgentRecord) -> Option<u64> {
+        let started = record.telemetry.started_at_ms?;
+        let end = match record.state {
+            AgentState::Done | AgentState::Error => record.updated_at_ms,
+            _ => {
+                let observed_at = self
+                    .agent_observed_at_ms
+                    .get(&record.surface)
+                    .copied()
+                    .unwrap_or_else(wall_clock_ms);
+                record.updated_at_ms.saturating_add(wall_clock_ms().saturating_sub(observed_at))
+            }
+        };
+        Some(end.saturating_sub(started) / 1_000)
+    }
+
+    pub(crate) fn agent_summary(&self, record: &AgentRecord, compact: bool) -> String {
+        let telemetry = &record.telemetry;
+        let messages = &localization::catalog().agent;
+        let mut parts = vec![messages.state_label(record.state).to_string()];
+        if !compact
+            && let Some(label) = telemetry.label.as_deref().filter(|value| !value.is_empty())
+        {
+            parts.push(label.to_string());
+        }
+        if let Some((completed, total)) = telemetry.tasks_completed.zip(telemetry.tasks_total) {
+            parts.push(format!("{completed}/{total}"));
+        }
+        if let Some(jobs) = telemetry.jobs_running {
+            parts.push(messages.jobs(jobs));
+        }
+        if let Some(agents) = telemetry.agents_active {
+            parts.push(messages.agents(agents));
+        }
+        if let Some(elapsed) = self.agent_elapsed_seconds(record) {
+            parts.push(format_elapsed(elapsed, compact, messages));
+        }
+        if let Some(detail) = telemetry.detail.as_deref().filter(|value| !value.is_empty()) {
+            parts.push(detail.to_string());
+        }
+        parts.join(" ")
+    }
+
+    fn tick_agent_elapsed(&mut self) -> bool {
+        let elapsed = self
+            .agent_records
+            .values()
+            .filter(|record| !matches!(record.state, AgentState::Done | AgentState::Error))
+            .filter_map(|record| self.agent_elapsed_seconds(record))
+            .max();
+        if elapsed == self.last_agent_elapsed_second {
+            false
+        } else {
+            self.last_agent_elapsed_second = elapsed;
+            true
+        }
+    }
+
+    pub(crate) fn notification_banner(&self) -> Option<&NotificationEvent> {
+        self.notification_banner.as_ref().map(|banner| &banner.event)
     }
 
     pub fn session_available(&self) -> bool {
@@ -8793,7 +8985,7 @@ impl App {
             // Finished reports are historical records, not active agents.
             // Otherwise detached "surface..." rows remain forever after exit.
             self.session
-                .agents()
+                .sidebar_agents()
                 .into_iter()
                 .filter(|agent| !matches!(agent.state.as_str(), "done" | "unknown"))
                 .collect::<Vec<_>>()
@@ -9212,6 +9404,7 @@ impl App {
             } else if self.shake_frames > 0
                 || self.selection_auto_scroll_active()
                 || self.toast.is_some()
+                || self.notification_banner.is_some()
             {
                 Duration::from_millis(30)
             } else {
@@ -9269,6 +9462,12 @@ impl App {
             }
             action = action.merge(self.apply_graphics_completion());
             action = action.merge(self.process_machine_requests());
+            if self.tick_agent_elapsed() {
+                action = action.merge(RenderAction::Draw);
+            }
+            if self.expire_notification_banner() {
+                action = action.merge(RenderAction::Draw);
+            }
             // Always drain retained failures. PtyFailuresReady only shortens
             // the idle wait, so a failed try_send cannot create a lost wakeup.
             action = action.merge(self.apply_pty_failures());
@@ -10140,6 +10339,16 @@ impl App {
         self.tree = tree;
         self.tab_locations.clear();
         self.rebuild_tab_locations();
+        self.agent_records = self
+            .session
+            .agents()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|record| (record.surface, record))
+            .collect();
+        self.agent_observed_at_ms =
+            self.agent_records.keys().copied().map(|surface| (surface, wall_clock_ms())).collect();
+        self.last_agent_elapsed_second = None;
         self.render_states.clear();
         self.pane_areas.clear();
         self.viewport_projection.clear();
@@ -10187,6 +10396,7 @@ impl App {
         self.pairing_queue.clear();
         self.omnibar = None;
         self.toast = None;
+        self.notification_banner = None;
         self.shake_frames = 0;
         self.replace_selection(None);
         self.last_browser_hover = None;
@@ -10859,7 +11069,9 @@ impl App {
                 }
                 continue;
             }
-            if self.session.has_pending_mutations()
+            let Some(input) = self.deferred_input.front() else { break };
+            let can_cross_pending_mutation = self.input_can_update_pending_mutation(&input.event);
+            if (self.session.has_pending_mutations() && !can_cross_pending_mutation)
                 || self.session.remote_tree_is_stale()
                 || self.mux_recovery_generation.load(Ordering::Acquire) != 0
             {
@@ -10868,7 +11080,6 @@ impl App {
                     disposition: DeferredReplayDisposition::Blocked,
                 });
             }
-            let Some(input) = self.deferred_input.front() else { break };
             match self.semantic_dependency_outcome(&input.admission) {
                 Some(SemanticDestinationOutcome::Pending) => {
                     return Ok(DeferredReplayOutcome {
@@ -10919,6 +11130,7 @@ impl App {
             }
             if let TerminalInput::Mouse(mouse) = &input.event
                 && self.pointer_route_is_stale_for_mouse(mouse)
+                && !can_cross_pending_mutation
             {
                 return Ok(DeferredReplayOutcome {
                     action,
@@ -11414,6 +11626,8 @@ impl App {
         self.pending_size_releases.remove(&surface);
         self.mux_titles.remove(surface);
         self.session.retire_surface_input(surface);
+        self.agent_records.remove(&surface);
+        self.agent_observed_at_ms.remove(&surface);
         self.session.forget_surface(surface);
         if self.sidebar_plugin_surface == Some(surface) {
             self.session.invalidate_sidebar_plugin_sync();
@@ -11449,6 +11663,25 @@ impl App {
                 }
             }
         }
+    }
+
+    fn exited_terminal_close_target(
+        &self,
+        surface: SurfaceId,
+    ) -> Option<(WorkspaceId, TerminalPublicId)> {
+        let [workspace_index, screen_index, pane_index, tab_index] =
+            *self.tab_locations.get(&surface)?;
+        let workspace = self.tree.workspaces.get(workspace_index)?;
+        let terminal = workspace
+            .screens
+            .get(screen_index)?
+            .panes
+            .get(pane_index)?
+            .tabs
+            .get(tab_index)?
+            .terminal_id
+            .clone()?;
+        Some((workspace.id, terminal))
     }
 
     /// Remove a retired view from the client cache before the authoritative
@@ -12233,10 +12466,24 @@ impl App {
     /// Refresh the tree snapshot, recompute the active screen's layout
     /// (each pane's border box eats one cell on every side), and push
     /// content sizes to surfaces.
-    fn sync_layout(&mut self, size: (u16, u16)) {
+    pub(crate) fn sync_layout(&mut self, size: (u16, u16)) {
+        self.sync_layout_with_tree_refresh(size, true);
+    }
+
+    /// Recompute frame geometry without replacing a newer tree already staged
+    /// by the event loop for this draw.
+    pub(crate) fn sync_frame_layout(&mut self, size: (u16, u16)) {
+        self.sync_layout_with_tree_refresh(size, false);
+    }
+
+    fn sync_layout_with_tree_refresh(&mut self, size: (u16, u16), refresh_tree: bool) {
         let (width, height) = size;
+        if width == 0 || height == 0 {
+            return;
+        }
+        self.frame_layout_size = Some(size);
         self.outer_size = size;
-        let sidebar_layout = if self.surface_only.is_some() {
+        self.sidebar_layout = if self.surface_only.is_some() {
             SidebarLayout {
                 content: Rect { x: 0, y: 0, width, height },
                 ..SidebarLayout::default()
@@ -12263,7 +12510,6 @@ impl App {
                 previous,
             )
         };
-        self.sidebar_layout = sidebar_layout;
         self.sidebar_width = self.sidebar_layout.workspace.map_or(0, |rect| rect.width);
         self.machine_sidebar_width = self.sidebar_layout.machine.map_or(0, |rect| rect.width);
         self.tabs_sidebar_width = self.sidebar_layout.tabs.map_or(0, |rect| rect.width);
@@ -12286,7 +12532,9 @@ impl App {
         if self.surface_only.is_none() {
             let _ = self.sync_sidebar_plugin(false);
         }
-        self.replace_tree(self.session.tree());
+        if refresh_tree {
+            self.replace_tree(self.session.tree());
+        }
         self.claim_active_terminal_geometry(false);
         if self.surface_only.is_none() {
             self.sidebar_workspace_selection =
@@ -12696,7 +12944,8 @@ impl App {
             }
         }
         match &event {
-            AppEvent::Mux(MuxEvent::LayoutChanged(_)) => {
+            AppEvent::Mux(MuxEvent::SurfaceExited { .. } | MuxEvent::LayoutChanged(_))
+            | AppEvent::Input(Event::Key(_) | Event::Mouse(_) | Event::Paste(_)) => {
                 self.session.refresh_remote_tree_if_stale();
             }
             AppEvent::NormalizedInput(input) if input.is_routable() => {
@@ -12711,8 +12960,21 @@ impl App {
             }
             _ => {}
         }
-        if matches!(&event, AppEvent::Mux(MuxEvent::TreeChanged | MuxEvent::LayoutChanged(_))) {
+        if matches!(
+            &event,
+            AppEvent::Mux(
+                MuxEvent::TreeChanged | MuxEvent::LayoutChanged(_) | MuxEvent::SurfaceExited { .. }
+            )
+        ) {
             self.session.clear_surface_sync_failures();
+        }
+        if let AppEvent::NormalizedInput(TerminalInput::Mouse(MouseEvent {
+            kind: MouseEventKind::Up(button),
+            ..
+        })) = &event
+            && !self.pointer_release_has_owner(*button)
+        {
+            return Ok(RenderAction::None);
         }
         if let AppEvent::NormalizedInput(TerminalInput::Mouse(
             mouse @ MouseEvent { kind: MouseEventKind::Moved, .. },
@@ -12955,7 +13217,7 @@ impl App {
             ) if !matches!(
                 &input,
                 TerminalInput::Mouse(MouseEvent { kind: MouseEventKind::Moved, .. })
-            ) && (self.session.has_pending_mutations()
+            ) && (self.pending_mutation_blocks_input(&input)
                 || self.session.remote_tree_is_stale()
                 || self.mux_recovery_generation.load(Ordering::Acquire) != 0
                 || matches!(&input, TerminalInput::Mouse(mouse) if self.pointer_route_is_stale_for_mouse(mouse)))
@@ -13054,6 +13316,20 @@ impl App {
                     MachineUpdate::DurableNotice(notice) => self.accept_durable_notice(notice),
                 })
             }
+            AppEvent::Mux(MuxEvent::AgentStateChanged { record, .. }) => {
+                let surface = record.surface;
+                self.agent_records.insert(surface, record);
+                self.agent_observed_at_ms.insert(surface, wall_clock_ms());
+                self.last_agent_elapsed_second = None;
+                Ok(RenderAction::Draw)
+            }
+            AppEvent::Mux(MuxEvent::Notification(event)) => {
+                self.notification_banner = Some(NotificationBanner {
+                    event,
+                    deadline: Instant::now() + NOTIFICATION_BANNER_DISPLAY_DURATION,
+                });
+                Ok(RenderAction::Draw)
+            }
             AppEvent::MachineControllerCompleted(completion) => {
                 Ok(self.apply_machine_controller_completion(*completion))
             }
@@ -13064,13 +13340,32 @@ impl App {
                 self.quit = true;
                 Ok(RenderAction::None)
             }
-            AppEvent::Mux(MuxEvent::SurfaceExited(id)) => {
-                self.retire_surface_state(id);
-                self.remove_surface_from_cached_tree(id);
-                if self.surface_only == Some(id) {
+            AppEvent::Mux(MuxEvent::SurfaceExited { surface, runtime_ms }) => {
+                if self.surface_only == Some(surface) {
+                    if runtime_ms.is_some_and(|runtime_ms| {
+                        runtime_ms >= self.config.abnormal_command_exit_runtime_ms()
+                    }) && let Some((workspace, terminal)) =
+                        self.exited_terminal_close_target(surface)
+                    {
+                        self.session.close_established_exited_surface(workspace, terminal);
+                    }
+                    self.retire_surface_state(surface);
+                    self.remove_surface_from_cached_tree(surface);
                     self.quit = true;
                     return Ok(RenderAction::None);
                 }
+                if runtime_ms.is_some_and(|runtime_ms| {
+                    runtime_ms < self.config.abnormal_command_exit_runtime_ms()
+                }) {
+                    return Ok(RenderAction::Draw);
+                }
+                if runtime_ms.is_some()
+                    && let Some((workspace, terminal)) = self.exited_terminal_close_target(surface)
+                {
+                    self.session.close_established_exited_surface(workspace, terminal);
+                }
+                self.retire_surface_state(surface);
+                self.remove_surface_from_cached_tree(surface);
                 Ok(RenderAction::Draw)
             }
             AppEvent::Mux(MuxEvent::SurfaceResized { surface, cols, rows, reservation_id }) => {
@@ -13697,6 +13992,17 @@ impl App {
         }
     }
 
+    fn pending_mutation_blocks_input(&self, input: &TerminalInput) -> bool {
+        match input {
+            TerminalInput::Mouse(_) => self.session.has_pending_pointer_mutations(),
+            TerminalInput::Keyboard(_)
+            | TerminalInput::FrontendAction { .. }
+            | TerminalInput::ClearHistoryKey(_)
+            | TerminalInput::Paste(_) => self.session.has_pending_mutations(),
+            _ => false,
+        }
+    }
+
     fn input_can_update_pending_mutation(&self, input: &TerminalInput) -> bool {
         if matches!(
             input,
@@ -14100,6 +14406,24 @@ impl App {
     fn mouse_opens_cmux_context_menu(mouse: &MouseEvent) -> bool {
         mouse.kind == MouseEventKind::Down(MouseButton::Right)
             && mouse.modifiers.contains(KeyModifiers::SHIFT)
+    }
+
+    fn pointer_release_has_owner(&self, button: MouseButton) -> bool {
+        self.active_pointer_buttons.contains(&button)
+            || match &self.drag {
+                Some(Drag::PtyMouse { button: owner, .. }) => *owner == button,
+                Some(_) => button == MouseButton::Left,
+                None => false,
+            }
+            || self.deferred_input.iter().any(|queued| {
+                matches!(
+                    &queued.event,
+                    TerminalInput::Mouse(MouseEvent {
+                        kind: MouseEventKind::Down(queued_button),
+                        ..
+                    }) if *queued_button == button
+                )
+            })
     }
 
     fn pointer_has_capture(&self, kind: MouseEventKind) -> bool {
@@ -17790,6 +18114,31 @@ impl App {
         let _ = self.browser_input.enqueue(BrowserInputEvent { surface_id, surface, kind });
     }
 
+    fn enqueue_browser_paste(&self, surface_id: SurfaceId, surface: SurfaceHandle, text: &str) {
+        let paste = BracketedPaste::new(text.as_bytes());
+        if paste.is_empty() {
+            return;
+        }
+        let text = std::str::from_utf8(paste.as_bytes())
+            .expect("removing ASCII paste markers preserves UTF-8");
+        let _ = self.browser_input.enqueue(BrowserInputEvent {
+            surface_id,
+            surface,
+            kind: BrowserInputKind::InsertText(text.to_string()),
+        });
+    }
+
+    fn terminal_paste_bytes(text: &str, bracketed: bool) -> Option<PtyInputBytes> {
+        let paste = BracketedPaste::new(text.as_bytes());
+        if paste.is_empty() {
+            return None;
+        }
+        Some(match paste.encoded(bracketed) {
+            std::borrow::Cow::Borrowed(bytes) => PtyInputBytes::from_slice(bytes),
+            std::borrow::Cow::Owned(bytes) => bytes.into(),
+        })
+    }
+
     fn paste(&mut self, text: &str) {
         if !self.session_available() {
             self.status_message =
@@ -17808,52 +18157,24 @@ impl App {
         }
         let Some(surface) = self.session.surface(surface_id) else { return };
         if surface.kind() == SurfaceKind::Browser {
-            let _ = self.browser_input.enqueue(BrowserInputEvent {
-                surface_id,
-                surface,
-                kind: BrowserInputKind::InsertText(text.to_string()),
-            });
+            self.enqueue_browser_paste(surface_id, surface, text);
             return;
         }
-        let Some(bracketed) = surface.with_terminal(|t| t.mode(2004, false)) else {
+        let Some(bracketed) = surface.with_terminal(|terminal| terminal.mode(2004, false)) else {
             return;
         };
-        if bracketed {
-            let mut bytes = Vec::with_capacity(text.len() + 12);
-            bytes.extend_from_slice(b"\x1b[200~");
-            bytes.extend_from_slice(text.as_bytes());
-            bytes.extend_from_slice(b"\x1b[201~");
-            let _ = self.write_pty_bytes(surface_id, surface, bytes.into(), PtyInputKind::Ordered);
-        } else {
-            let _ = self.write_pty_bytes(
-                surface_id,
-                surface,
-                PtyInputBytes::from_slice(text.as_bytes()),
-                PtyInputKind::Ordered,
-            );
-        }
+        let Some(bytes) = Self::terminal_paste_bytes(text, bracketed) else { return };
+        let _ = self.write_pty_bytes(surface_id, surface, bytes, PtyInputKind::Ordered);
     }
 
     fn paste_sidebar(&mut self, text: &str) {
         let Some(surface_id) = self.sidebar_plugin_surface else { return };
         let Some(surface) = self.sidebar_surface_handle() else { return };
-        let Some(bracketed) = surface.with_terminal(|t| t.mode(2004, false)) else {
+        let Some(bracketed) = surface.with_terminal(|terminal| terminal.mode(2004, false)) else {
             return;
         };
-        if bracketed {
-            let mut bytes = Vec::with_capacity(text.len() + 12);
-            bytes.extend_from_slice(b"\x1b[200~");
-            bytes.extend_from_slice(text.as_bytes());
-            bytes.extend_from_slice(b"\x1b[201~");
-            let _ = self.write_pty_bytes(surface_id, surface, bytes.into(), PtyInputKind::Ordered);
-        } else {
-            let _ = self.write_pty_bytes(
-                surface_id,
-                surface,
-                PtyInputBytes::from_slice(text.as_bytes()),
-                PtyInputKind::Ordered,
-            );
-        }
+        let Some(bytes) = Self::terminal_paste_bytes(text, bracketed) else { return };
+        let _ = self.write_pty_bytes(surface_id, surface, bytes, PtyInputKind::Ordered);
     }
 
     fn pane_area_at(&self, x: u16, y: u16) -> Option<&PaneArea> {
@@ -19953,6 +20274,16 @@ impl App {
         let _ = stdout.flush();
     }
 
+    fn expire_notification_banner(&mut self) -> bool {
+        if self.notification_banner.as_ref().is_some_and(|banner| Instant::now() >= banner.deadline)
+        {
+            self.notification_banner = None;
+            true
+        } else {
+            false
+        }
+    }
+
     fn copy_short_id(&mut self, short_id: String) {
         self.copy_text_to_clipboard(&short_id);
         self.show_toast(format!("Copied {short_id}"));
@@ -21447,9 +21778,9 @@ mod tests {
         FrontendJournalWorker, GraphicIdentity, GraphicPlacement, GraphicSourceRect,
         GraphicsSceneCache, GuardedMouseEncode, HostInputIngress, HostInputRuntime,
         MachineActionWorker, MachineConnectRoute, MenuAction, MenuItem, MutationImpact,
-        MuxTitleIngress, OmnibarHit, OmnibarState, OrderedSession, OuterCursorSpec, PaneArea,
-        PaneAreaProjection, PaneContentGeneration, PaneEdge, PaneFocusHistory,
-        PaneResizeDragTarget, PaneViewportClip, PendingSessionMutation,
+        MuxTitleIngress, NotificationBanner, OmnibarHit, OmnibarState, OrderedSession,
+        OuterCursorSpec, PaneArea, PaneAreaProjection, PaneContentGeneration, PaneEdge,
+        PaneFocusHistory, PaneResizeDragTarget, PaneViewportClip, PendingSessionMutation,
         PendingSessionMutationState, PointerHitIdentity, PointerRouteIdentity, PointerRoutePhase,
         Prompt, PromptTarget, PtyFailureIngress, PtyMousePressResult, RailKind, RenderAction,
         RenderedMenuLevel, RenderedPaneRoute, RenderedPointerFrame, Selection, SessionCompletion,
@@ -21463,17 +21794,18 @@ mod tests {
         browser_frame_source_crop, browser_hover_forward_allowed, browser_source_crop,
         canonical_terminal_content, catch_renderer_panic, clamp_split_ratio_for_tab_bars,
         client_menu_item, clip_horizontal_rect, disable_host_keyboard_protocol,
-        enable_host_keyboard_protocol, forward_host_input, forward_mux_event, forward_mux_events,
-        keyboard_protocol_accepts, layout_undo_error_completion,
+        enable_host_keyboard_protocol, format_elapsed, forward_host_input, forward_mux_event,
+        forward_mux_events, keyboard_protocol_accepts, layout_undo_error_completion,
         negotiate_host_keyboard_protocol_with, outer_cursor_escape, outer_cursor_escape_if_changed,
         pane_area_projection_work, pane_context_menu_groups, pane_parts_for_rect,
         prepare_ordered_session, preserve_client_view, rail_drag_width, rebuild_pane_areas,
         record_surface_resize_dispatch_result, report_after_unwind,
         reset_pane_area_projection_work, should_claim_clear_history_shortcut, sidebar_layout_for,
         sidebar_layout_for_state, sidebar_plugin_status_settles_passive_claim,
-        start_ordered_session, swept_viewport_size_leases, thumb_geometry, with_panic_stdout_lock,
-        workspace_creation_selection,
+        start_ordered_session, swept_viewport_size_leases, thumb_geometry, wall_clock_ms,
+        with_panic_stdout_lock, workspace_creation_selection,
     };
+    use cmux_tui_core::resource::TerminalPublicId;
     use cmux_tui_core::{FrontendFocusTarget, FrontendJournalEvent};
     use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
     use std::path::PathBuf;
@@ -21484,9 +21816,10 @@ mod tests {
 
     use cmux_tui_core::resource::FrontendProjectionPublicId;
     use cmux_tui_core::{
-        AgentSource, AgentState, BrowserFrame, BrowserStatus, Direction, LayoutUndoError, Mux,
-        MuxEvent, Node, PointerSnapshotProbe, Rect, SplitDir, SurfaceId, SurfaceKind,
-        SurfaceOptions, VirtualRect, ZoomMode, layout_screen, server,
+        AgentRecord, AgentSource, AgentState, AgentTelemetry, BrowserFrame, BrowserStatus,
+        Direction, LayoutUndoError, Mux, MuxEvent, Node, NotificationEvent, NotificationLevel,
+        PointerSnapshotProbe, Rect, SplitDir, SurfaceId, SurfaceKind, SurfaceOptions, VirtualRect,
+        ZoomMode, layout_screen, server,
     };
     use crossterm::event::{
         EnhancedKeyEvent, Event, KeyCode, KeyEvent, KeyModifiers, KeyboardEnhancementFlags,
@@ -22215,6 +22548,30 @@ mod tests {
     }
 
     #[test]
+    fn browser_paste_strips_nested_markers_before_insert_text() {
+        let mux = Mux::new("browser-paste-sanitize-test", SurfaceOptions::default());
+        let mut app = test_app(Session::Local(mux));
+        let (dispatcher, blocked) = BrowserInputDispatcher::blocked(1);
+        app.browser_input = dispatcher;
+
+        app.enqueue_browser_paste(
+            7,
+            SurfaceHandle::RemoteBrowserUnsupported,
+            "\u{1b}[200~safe\u{1b}[201~",
+        );
+
+        let event = blocked.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(matches!(event.kind, BrowserInputKind::InsertText(text) if text == "safe"));
+    }
+
+    #[test]
+    fn sidebar_paste_uses_single_wrapping_and_drops_sanitized_empty_payloads() {
+        let bytes = App::terminal_paste_bytes("\u{1b}[200~safe\u{1b}[201~", true).unwrap();
+        assert_eq!(bytes.as_slice(), b"\x1b[200~safe\x1b[201~");
+        assert!(App::terminal_paste_bytes("\u{1b}[200~\u{1b}[201~", true).is_none());
+    }
+
+    #[test]
     fn browser_routes_modified_associated_text_as_an_atomic_key_press() {
         let mux = Mux::new("browser-modified-associated-text-test", SurfaceOptions::default());
         let mut app = test_app(Session::Local(mux));
@@ -22307,6 +22664,117 @@ mod tests {
         assert_eq!(layout.content.width, 0);
     }
 
+    fn assert_layout_within_frame(app: &App, size: (u16, u16)) {
+        let (width, height) = size;
+        assert_eq!(app.frame_layout_size, Some(size));
+        assert!(app.content_area.x.saturating_add(app.content_area.width) <= width);
+        assert!(app.content_area.y.saturating_add(app.content_area.height) <= height);
+        for area in &app.pane_areas {
+            assert!(area.rect.x.saturating_add(area.rect.width) <= width);
+            assert!(area.rect.y.saturating_add(area.rect.height) <= height);
+            assert!(area.content.x.saturating_add(area.content.width) <= width);
+            assert!(area.content.y.saturating_add(area.content.height) <= height);
+        }
+    }
+
+    #[test]
+    fn draw_syncs_an_uninitialized_frame_layout() {
+        let mux = Mux::new("initial-frame-layout-test", SurfaceOptions::default());
+        let mut app = test_app(Session::Local(mux));
+        assert_eq!(app.frame_layout_size, None);
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
+
+        assert_layout_within_frame(&app, (80, 24));
+    }
+
+    #[test]
+    fn draw_frame_resync_preserves_the_staged_tree() {
+        let mux = Mux::new("staged-frame-layout-test", SurfaceOptions::default());
+        let mut app = test_app(Session::Local(mux));
+        app.tree = notify_tree(41, false);
+        app.frame_layout_size = Some((81, 24));
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
+
+        assert_eq!(app.tree.active_surface(), Some(41));
+        assert_layout_within_frame(&app, (80, 24));
+    }
+
+    #[test]
+    fn draw_survives_host_height_shrinking_after_layout_sync() {
+        let mux = Mux::new("host-height-shrink-draw-test", SurfaceOptions::default());
+        let mut app = test_app(Session::Local(mux));
+        app.sync_layout((80, 25));
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
+
+        assert_layout_within_frame(&app, (80, 24));
+    }
+
+    #[test]
+    fn draw_survives_host_width_shrinking_after_layout_sync() {
+        let mux = Mux::new("host-width-shrink-draw-test", SurfaceOptions::default());
+        let mut app = test_app(Session::Local(mux));
+        app.sync_layout((81, 24));
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
+
+        assert_layout_within_frame(&app, (80, 24));
+    }
+
+    #[test]
+    fn draw_skips_layout_sync_for_zero_height_frames() {
+        let mux = Mux::new("zero-height-frame-test", SurfaceOptions::default());
+        let mut app = test_app(Session::Local(mux));
+        app.sync_layout((80, 24));
+        let expected_content = app.content_area;
+        let expected_visible = app.visible_size_surfaces.clone();
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 0)).unwrap();
+        terminal.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
+
+        assert_eq!(app.frame_layout_size, Some((80, 24)));
+        assert_eq!(app.content_area, expected_content);
+        assert_eq!(app.visible_size_surfaces, expected_visible);
+    }
+
+    #[test]
+    fn draw_skips_layout_sync_for_zero_width_frames() {
+        let mux = Mux::new("zero-width-frame-test", SurfaceOptions::default());
+        let mut app = test_app(Session::Local(mux));
+        app.sync_layout((80, 24));
+        let expected_content = app.content_area;
+        let expected_visible = app.visible_size_surfaces.clone();
+
+        let mut terminal = Terminal::new(TestBackend::new(0, 24)).unwrap();
+        terminal.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
+
+        assert_eq!(app.frame_layout_size, Some((80, 24)));
+        assert_eq!(app.content_area, expected_content);
+        assert_eq!(app.visible_size_surfaces, expected_visible);
+    }
+
+    #[test]
+    fn sync_layout_ignores_zero_sized_host_grids() {
+        let mux = Mux::new("zero-sized-layout-test", SurfaceOptions::default());
+        let mut app = test_app(Session::Local(mux));
+        app.sync_layout((80, 24));
+        let expected_content = app.content_area;
+        let expected_visible = app.visible_size_surfaces.clone();
+
+        for size in [(0, 24), (80, 0), (0, 0)] {
+            app.sync_layout(size);
+            assert_eq!(app.frame_layout_size, Some((80, 24)));
+            assert_eq!(app.content_area, expected_content);
+            assert_eq!(app.visible_size_surfaces, expected_visible);
+        }
+    }
+
     #[test]
     fn panic_restore_waits_for_a_concurrent_stdout_owner() {
         let lock = Arc::new(StdoutLock::new(()));
@@ -22370,9 +22838,10 @@ mod tests {
     fn context_menus_scope_pane_and_sidebar_actions_to_the_clicked_region() {
         let mux = Mux::new("shortcut-menu-test", SurfaceOptions::default());
         let mut app = test_app(Session::Local(mux));
-        app.tree = notify_tree(41, false);
         app.sidebar_view = SidebarView::Workspaces;
-        app.sidebar_width = 20;
+        app.sidebar_width_override = Some(20);
+        app.sync_layout((100, 40));
+        app.tree = notify_tree(41, false);
         app.pane_areas.push(PaneArea {
             pane: 2,
             surface: 41,
@@ -23020,7 +23489,7 @@ mod tests {
         let mut exited = HashSet::new();
         while exited.len() < created.len() {
             match mux_events.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-                Ok(MuxEvent::SurfaceExited(surface)) if created.contains(&surface) => {
+                Ok(MuxEvent::SurfaceExited { surface, .. }) if created.contains(&surface) => {
                     exited.insert(surface);
                 }
                 Ok(_) => {}
@@ -23813,6 +24282,391 @@ mod tests {
         assert_eq!(terminal.backend().buffer()[(0, 7)].fg, ratatui::style::Color::Red);
 
         mux.close_surface(surface.id).unwrap();
+    }
+
+    #[test]
+    fn agent_telemetry_renders_in_status_and_workspace_sidebar_without_hiding_chrome() {
+        let mux = Mux::new("agent-summary-test", SurfaceOptions::default());
+        let mut app = test_app(Session::Local(mux));
+        app.sidebar_view = SidebarView::Workspaces;
+        app.sidebar_width_override = Some(44);
+        app.sync_layout((120, 12));
+        app.tree = notify_tree(41, false);
+        app.session_label = "session".to_string();
+        app.agent_records.insert(
+            41,
+            AgentRecord {
+                surface: 41,
+                terminal_id: agent_terminal_id(41),
+                state: AgentState::Working,
+                source: AgentSource::Socket,
+                session: Some("session-1".to_string()),
+                telemetry: AgentTelemetry {
+                    root_session: false,
+                    label: Some("root".to_string()),
+                    detail: Some("reviewing".to_string()),
+                    started_at_ms: Some(wall_clock_ms().saturating_sub(65_000)),
+                    tasks_completed: Some(3),
+                    tasks_total: Some(5),
+                    jobs_running: Some(2),
+                    agents_active: Some(4),
+                },
+                updated_at_ms: wall_clock_ms(),
+            },
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 12)).unwrap();
+        terminal.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
+        let rendered = buffer_text(terminal.backend().buffer());
+
+        assert!(rendered.contains("working"), "{rendered}");
+        assert!(rendered.contains("3/5"), "{rendered}");
+        assert!(rendered.contains("2j"), "{rendered}");
+        assert!(rendered.contains("4a"), "{rendered}");
+        assert!(rendered.contains("1m"), "{rendered}");
+        let status = rendered.lines().last().unwrap();
+        assert!(status.contains("screens"), "{status}");
+        assert!(status.contains("[session]"), "{status}");
+    }
+
+    #[test]
+    fn workspace_sidebar_skips_rendering_when_too_narrow() {
+        let mux = Mux::new("narrow-workspace-sidebar-test", SurfaceOptions::default());
+        let mut app = test_app(Session::Local(mux));
+        app.tree = notify_tree(41, false);
+        app.sidebar_view = SidebarView::Workspaces;
+        app.sidebar_width = 1;
+
+        let mut terminal = Terminal::new(TestBackend::new(1, 6)).unwrap();
+        terminal.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
+
+        assert!(app.hits.is_empty());
+    }
+
+    #[test]
+    fn agent_summary_units_follow_the_active_catalog() {
+        let messages = &localization::catalog_for_locale("ja_JP.UTF-8").agent;
+
+        assert_eq!(messages.state_label(AgentState::Blocked), "ブロック中");
+        assert_eq!(messages.jobs(2), "2件");
+        assert_eq!(messages.agents(4), "4体");
+        assert_eq!(format_elapsed(3_661, false, messages), "1時間01分");
+        assert_eq!(format_elapsed(61, false, messages), "1分01秒");
+    }
+
+    #[test]
+    fn workspace_subtitle_counts_every_omp_root_status_without_counting_subagents() {
+        let mux = Mux::new("omp-root-summary-test", SurfaceOptions::default());
+        let mut app = test_app(Session::Local(mux));
+        let mut tree = notify_tree(41, false);
+        let pane = &mut tree.workspaces[0].screens[0].panes[0];
+        let template = pane.tabs[0].clone();
+        pane.tabs = (41..=47)
+            .map(|surface| {
+                let mut tab = template.clone();
+                tab.surface = surface;
+                tab
+            })
+            .collect();
+        let mut second_workspace = tree.workspaces[0].clone();
+        second_workspace.id = 5;
+        second_workspace.key = "00000000-0000-4000-8000-000000000005".to_string();
+        second_workspace.short_id = "000005".to_string();
+        second_workspace.name = "other".to_string();
+        let second_pane = &mut second_workspace.screens[0].panes[0];
+        second_pane.tabs = (48..=50)
+            .map(|surface| {
+                let mut tab = template.clone();
+                tab.surface = surface;
+                tab
+            })
+            .collect();
+        tree.workspaces.push(second_workspace);
+        app.sidebar_view = SidebarView::Workspaces;
+        app.sidebar_width_override = Some(80);
+        app.sync_layout((120, 12));
+        app.tree = tree;
+        let record = |surface, state, root_session, label: &str, agents_active| AgentRecord {
+            surface,
+            terminal_id: agent_terminal_id(surface),
+            state,
+            source: AgentSource::Hook,
+            session: Some(format!("session-{surface}")),
+            telemetry: AgentTelemetry {
+                root_session,
+                label: Some(label.to_string()),
+                agents_active: Some(agents_active),
+                ..AgentTelemetry::default()
+            },
+            updated_at_ms: wall_clock_ms(),
+        };
+        app.agent_records.insert(41, record(41, AgentState::Done, true, "Worker", 1));
+        app.agent_records.insert(42, record(42, AgentState::Blocked, true, "Worker", 1));
+        app.agent_records.insert(43, record(43, AgentState::Working, true, "Worker", 99));
+        app.agent_records.insert(44, record(44, AgentState::Idle, true, "Worker", 1));
+        app.agent_records.insert(45, record(45, AgentState::Error, true, "Worker", 1));
+        app.agent_records.insert(46, record(46, AgentState::Unknown, true, "Worker", 1));
+        app.agent_records.insert(47, record(47, AgentState::Blocked, false, "OMP", 1));
+        app.agent_records.insert(48, record(48, AgentState::Done, true, "Worker", 1));
+        app.agent_records.insert(49, record(49, AgentState::Working, true, "Worker", 1));
+        app.agent_records.insert(50, record(50, AgentState::Working, true, "Worker", 1));
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 12)).unwrap();
+        terminal.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
+        let rendered = buffer_text(terminal.backend().buffer());
+
+        assert!(
+            rendered
+                .contains("1 completed · 1 waiting · 1 running · 1 idle · 1 failed · 1 stopped"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("1 completed · 2 running"), "{rendered}");
+        assert!(!rendered.contains("99"), "subagent telemetry leaked into root counts: {rendered}");
+    }
+
+    #[test]
+    fn live_agent_elapsed_uses_server_timeline_despite_clock_skew() {
+        let mux = Mux::new("agent-elapsed-skew-test", SurfaceOptions::default());
+        let mut app = test_app(Session::Local(mux));
+        let started_at_ms = 9_000_000_000_000;
+        let record = AgentRecord {
+            surface: 41,
+            terminal_id: agent_terminal_id(41),
+            state: AgentState::Working,
+            source: AgentSource::Socket,
+            session: None,
+            telemetry: AgentTelemetry {
+                started_at_ms: Some(started_at_ms),
+                ..AgentTelemetry::default()
+            },
+            updated_at_ms: started_at_ms + 1_000,
+        };
+        app.agent_observed_at_ms.insert(41, wall_clock_ms().saturating_sub(2_000));
+
+        assert_eq!(app.agent_elapsed_seconds(&record), Some(3));
+    }
+
+    #[test]
+    fn elapsed_tick_tracks_running_agents_outside_the_active_surface() {
+        let mux = Mux::new("sidebar-agent-elapsed-test", SurfaceOptions::default());
+        let mut app = test_app(Session::Local(mux));
+        app.agent_records.insert(
+            41,
+            AgentRecord {
+                surface: 41,
+                terminal_id: agent_terminal_id(41),
+                state: AgentState::Working,
+                source: AgentSource::Socket,
+                session: None,
+                telemetry: AgentTelemetry {
+                    started_at_ms: Some(wall_clock_ms().saturating_sub(1_000)),
+                    ..AgentTelemetry::default()
+                },
+                updated_at_ms: wall_clock_ms(),
+            },
+        );
+
+        assert!(app.tick_agent_elapsed());
+    }
+
+    #[test]
+    fn notification_banner_expiry_clears_only_expired_banners() {
+        let mux = Mux::new("notification-expiry-test", SurfaceOptions::default());
+        let mut app = test_app(Session::Local(mux));
+        let event = NotificationEvent {
+            notification: 1,
+            title: "Build".to_string(),
+            subtitle: None,
+            body: "done".to_string(),
+            level: NotificationLevel::Info,
+            surface: None,
+        };
+        app.notification_banner = Some(NotificationBanner {
+            event: event.clone(),
+            deadline: Instant::now() + Duration::from_secs(1),
+        });
+        assert!(!app.expire_notification_banner());
+
+        app.notification_banner =
+            Some(NotificationBanner { event, deadline: Instant::now() - Duration::from_millis(1) });
+        assert!(app.expire_notification_banner());
+        assert!(app.notification_banner.is_none());
+    }
+
+    #[test]
+    fn narrow_status_keeps_screen_and_session_before_agent_summary() {
+        let mux = Mux::new("agent-summary-narrow-test", SurfaceOptions::default());
+        let mut app = test_app(Session::Local(mux));
+        app.sidebar_visible = false;
+        app.sync_layout((34, 8));
+        app.tree = notify_tree(41, false);
+        app.session_label = "sess".to_string();
+        app.agent_records.insert(
+            41,
+            AgentRecord {
+                surface: 41,
+                terminal_id: agent_terminal_id(41),
+                state: AgentState::Working,
+                source: AgentSource::Socket,
+                session: None,
+                telemetry: AgentTelemetry {
+                    label: Some("very-long-agent-label".to_string()),
+                    tasks_completed: Some(123),
+                    tasks_total: Some(456),
+                    jobs_running: Some(78),
+                    agents_active: Some(90),
+                    ..AgentTelemetry::default()
+                },
+                updated_at_ms: wall_clock_ms(),
+            },
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(34, 8)).unwrap();
+        terminal.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
+        let rendered = buffer_text(terminal.backend().buffer());
+        let status = rendered.lines().last().unwrap();
+
+        assert!(status.contains("screens"), "{status}");
+        assert!(status.contains("[sess]"), "{status}");
+    }
+
+    #[test]
+    fn agent_state_events_update_cache_and_keep_blocked_distinct_from_error() {
+        let mux = Mux::new("agent-event-render-test", SurfaceOptions::default());
+        let mut app = test_app(Session::Local(mux));
+        app.sidebar_visible = false;
+        app.sync_layout((80, 8));
+        app.tree = notify_tree(41, false);
+        let record = |state| AgentRecord {
+            surface: 41,
+            terminal_id: agent_terminal_id(41),
+            state,
+            source: AgentSource::Hook,
+            session: None,
+            telemetry: AgentTelemetry {
+                detail: Some("awaiting approval".to_string()),
+                ..AgentTelemetry::default()
+            },
+            updated_at_ms: wall_clock_ms(),
+        };
+
+        app.handle(AppEvent::Mux(MuxEvent::AgentStateChanged {
+            previous: Some(AgentState::Working),
+            record: record(AgentState::Blocked),
+        }))
+        .unwrap();
+        assert_eq!(app.agent_records[&41].state, AgentState::Blocked);
+        let mut blocked = Terminal::new(TestBackend::new(80, 8)).unwrap();
+        blocked.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
+        let blocked_buffer = blocked.backend().buffer();
+        let blocked_x = (0..80).find(|x| blocked_buffer[(*x, 7)].symbol() == "!").unwrap();
+        assert_eq!(blocked_buffer[(blocked_x, 7)].fg, app.config.theme.notification_warning);
+        assert!(buffer_text(blocked_buffer).contains("awaiting approval"));
+
+        app.handle(AppEvent::Mux(MuxEvent::AgentStateChanged {
+            previous: Some(AgentState::Blocked),
+            record: record(AgentState::Error),
+        }))
+        .unwrap();
+        assert_eq!(app.agent_records[&41].state, AgentState::Error);
+        let mut failed = Terminal::new(TestBackend::new(80, 8)).unwrap();
+        failed.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
+        let failed_buffer = failed.backend().buffer();
+        let error_x = (0..80).find(|x| failed_buffer[(*x, 7)].symbol() == "×").unwrap();
+        assert_eq!(failed_buffer[(error_x, 7)].fg, app.config.theme.notification_error);
+    }
+
+    #[test]
+    fn notification_banner_renders_optional_subtitles_and_all_severities() {
+        let mux = Mux::new("notification-banner-test", SurfaceOptions::default());
+        let mut app = test_app(Session::Local(mux));
+        app.tree = notify_tree(41, false);
+        app.sidebar_visible = false;
+        let cases = [
+            ("Permission", NotificationLevel::Warning),
+            ("Error", NotificationLevel::Error),
+            ("Completed", NotificationLevel::Info),
+            ("Waiting", NotificationLevel::Warning),
+        ];
+        for (index, (subtitle, level)) in cases.into_iter().enumerate() {
+            app.handle(AppEvent::Mux(MuxEvent::Notification(NotificationEvent {
+                notification: index as u64 + 1,
+                title: "Agent".to_string(),
+                subtitle: Some(subtitle.to_string()),
+                body: "needs attention".to_string(),
+                level,
+                surface: Some(41),
+            })))
+            .unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
+            terminal.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let rendered = buffer_text(buffer);
+            assert!(
+                rendered.contains(&format!("Agent · {subtitle} — needs attention")),
+                "{rendered}"
+            );
+            let expected = match level {
+                NotificationLevel::Info => app.config.theme.notification_info,
+                NotificationLevel::Warning => app.config.theme.notification_warning,
+                NotificationLevel::Error => app.config.theme.notification_error,
+            };
+            assert_eq!(buffer[(0, 6)].bg, expected);
+            let subtitle_x = rendered.lines().nth(6).unwrap().find(subtitle).unwrap() as u16;
+            assert!(buffer[(subtitle_x, 6)].modifier.contains(Modifier::UNDERLINED));
+        }
+
+        app.handle(AppEvent::Mux(MuxEvent::Notification(NotificationEvent {
+            notification: 5,
+            title: "Build".to_string(),
+            subtitle: None,
+            body: "ok".to_string(),
+            level: NotificationLevel::Info,
+            surface: None,
+        })))
+        .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
+        terminal.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Build — ok"), "{rendered}");
+        assert!(!rendered.contains("Build ·"), "{rendered}");
+    }
+
+    #[test]
+    fn notification_unread_badge_reports_count_and_highest_severity() {
+        let mux = Mux::new("notification-summary-test", SurfaceOptions::default());
+        let mut app = test_app(Session::Local(mux));
+        app.sidebar_view = SidebarView::Files;
+        app.sidebar_width_override = Some(24);
+        app.sync_layout((80, 10));
+        let cases = [
+            (vec!["info"], app.config.theme.notification_info),
+            (vec!["info", "warning"], app.config.theme.notification_warning),
+            (vec!["info", "warning", "error"], app.config.theme.notification_error),
+        ];
+        for (levels, expected) in cases {
+            let mut tree = notify_tree(41, false);
+            let pane = &mut tree.workspaces[0].screens[0].panes[0];
+            let template = pane.tabs[0].clone();
+            pane.tabs = levels
+                .iter()
+                .enumerate()
+                .map(|(index, level)| {
+                    let mut tab = template.clone();
+                    tab.surface = 41 + index as u64;
+                    tab.notification = Some(TabNotificationView { unread: true, level });
+                    tab
+                })
+                .collect();
+            app.tree = tree;
+            let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+            terminal.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let header = (0..24).map(|x| buffer[(x, 0)].symbol()).collect::<String>();
+            assert!(header.contains(&format!("• {}", levels.len())), "{header}");
+            let badge_x = (0..24).find(|x| buffer[(*x, 0)].symbol() == "•").unwrap();
+            assert_eq!(buffer[(badge_x, 0)].fg, expected);
+        }
     }
 
     #[test]
@@ -26408,7 +27262,7 @@ mod tests {
     #[test]
     fn browser_omnibar_places_stall_suffix_after_emoji_display_cells() {
         let mux = Mux::new("emoji-browser-omnibar-test", SurfaceOptions::default());
-        let surface = mux.new_browser_tab("emoji:👩‍💻".to_string(), None, Some((48, 8))).unwrap();
+        let _surface = mux.new_browser_tab("emoji:👩‍💻".to_string(), None, Some((48, 8))).unwrap();
         let mut app = test_app(Session::Local(mux.clone()));
         app.sidebar_visible = false;
         app.replace_tree(app.session.tree());
@@ -26428,19 +27282,17 @@ mod tests {
         tab.browser_frames_stalled = true;
         let area = *app.pane_areas.iter().find(|area| area.pane == pane).unwrap();
         let omnibar = area.omnibar.unwrap();
-        let handle = app.session.surface(surface.id).unwrap();
-        let mut label = handle.browser_url().unwrap();
-        if matches!(handle.browser_status(), Some(BrowserStatus::Starting))
-            || (matches!(handle.browser_status(), Some(BrowserStatus::Live))
-                && !handle.has_browser_frame())
-        {
-            label.push('…');
-        }
         let suffix = " ⏸ chrome tab hidden";
         let max = omnibar.width.saturating_sub(9) as usize;
         let label_max = max - suffix.width();
-        let text = crate::ui::truncate(&label, label_max);
-        let expected_icon_x = omnibar.x + 9 + text.width() as u16 + 1;
+        let expected_icon_xs = [false, true].map(|loading| {
+            let mut label = "emoji:👩‍💻".to_string();
+            if loading {
+                label.push('…');
+            }
+            let text = crate::ui::truncate(&label, label_max);
+            omnibar.x + 9 + text.width() as u16 + 1
+        });
 
         let mut terminal = Terminal::new(TestBackend::new(50, 12)).unwrap();
         terminal
@@ -26448,9 +27300,11 @@ mod tests {
                 crate::ui::omnibar::draw(&mut app, frame, &area);
             })
             .unwrap();
-        assert_eq!(
-            terminal.backend().buffer()[(expected_icon_x, omnibar.y)].symbol(),
-            "⏸",
+        let rendered_icon_x = (omnibar.x..omnibar.x + omnibar.width)
+            .find(|x| terminal.backend().buffer()[(*x, omnibar.y)].symbol() == "⏸")
+            .expect("the stall suffix icon must be visible");
+        assert!(
+            expected_icon_xs.contains(&rendered_icon_x),
             "the stall suffix must start after the label's display cells"
         );
 
@@ -29256,8 +30110,17 @@ mod tests {
         mux.new_workspace(Some("Alpha".to_string()), Some((80, 24))).unwrap();
         mux.new_workspace(Some("Beta".to_string()), Some((80, 24))).unwrap();
         let (mut app, events) = test_app_with_events(Session::Local(mux.clone()));
-        app.sidebar_width = 18;
+
+        // Exercise the attached-client branch while keeping a local owner mux
+        // available for an immediate authoritative-state assertion.
+        app.session.remote = true;
+
         app.sidebar_view = SidebarView::Workspaces;
+        app.sidebar_width_override = Some(18);
+        app.sync_layout((80, 24));
+        while app.session.has_pending_mutations() {
+            app.handle(events.recv_timeout(Duration::from_secs(1)).unwrap()).unwrap();
+        }
         app.replace_tree(app.session.tree());
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
 
@@ -29266,7 +30129,11 @@ mod tests {
             // Install the owner's reset snapshot directly between subcases.
             app.tree = app.session.tree();
             app.rebuild_tab_locations();
-            terminal.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
+            app.render_action(&mut terminal, RenderAction::Draw).unwrap();
+            while app.session.has_pending_mutations() {
+                let settled = events.recv_timeout(Duration::from_secs(1)).unwrap();
+                app.handle(settled).unwrap();
+            }
 
             let mut alpha_rows = app
                 .hits
@@ -29332,27 +30199,17 @@ mod tests {
         let first = mux.new_workspace(None, Some((80, 24))).unwrap();
         let pane = mux.with_state(|state| state.pane_of(first.id).unwrap());
         let second = mux.new_tab(Some(pane), None, Some((80, 24))).unwrap();
-        let mut app = test_app(Session::Local(mux.clone()));
+        let (mut app, events) = test_app_with_events(Session::Local(mux.clone()));
+        app.session.remote = true;
+        app.sidebar_visible = false;
+        app.sync_layout((80, 24));
+        while app.session.has_pending_mutations() {
+            app.handle(events.recv_timeout(Duration::from_secs(1)).unwrap()).unwrap();
+        }
         app.replace_tree(app.session.tree());
 
-        let rect = Rect { x: 0, y: 0, width: 80, height: 23 };
-        let (bar, omnibar, content, track) =
-            pane_parts_for_rect(rect, app.config.scrollbar.position, false);
-        app.sidebar_visible = false;
-        app.sidebar_width = 0;
-        app.content_area = rect;
-        app.pane_areas = vec![PaneArea {
-            pane,
-            surface: second.id,
-            rect,
-            bar,
-            omnibar,
-            content,
-            track,
-            viewport: None,
-        }];
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        terminal.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
+        app.render_action(&mut terminal, RenderAction::Draw).unwrap();
         let first_tab = app
             .hits
             .iter()
@@ -29403,24 +30260,16 @@ mod tests {
         let (mut app, events) = test_app_with_events(Session::Local(mux.clone()));
         app.replace_tree(app.session.tree());
 
-        let rect = Rect { x: 0, y: 0, width: 80, height: 23 };
-        let (bar, omnibar, content, track) =
-            pane_parts_for_rect(rect, app.config.scrollbar.position, false);
         app.sidebar_visible = false;
         app.sidebar_width = 0;
-        app.content_area = rect;
-        app.pane_areas = vec![PaneArea {
-            pane,
-            surface: second.id,
-            rect,
-            bar,
-            omnibar,
-            content,
-            track,
-            viewport: None,
-        }];
+        app.sync_layout((80, 24));
+        while app.session.has_pending_mutations() {
+            app.handle(events.recv_timeout(Duration::from_secs(1)).unwrap()).unwrap();
+        }
+        app.replace_tree(app.session.tree());
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        terminal.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
+        app.render_action(&mut terminal, RenderAction::Draw).unwrap();
+        app.pointer_route_phase = PointerRoutePhase::Fresh;
         let mut tabs = app
             .hits
             .iter()
@@ -29443,11 +30292,7 @@ mod tests {
             }))
         };
 
-        app.handle(event(
-            MouseEventKind::Down(MouseButton::Left),
-            second_tab.x + second_tab.width / 2,
-        ))
-        .unwrap();
+        app.handle(event(MouseEventKind::Down(MouseButton::Left), second_tab.x)).unwrap();
         assert!(matches!(app.drag, Some(Drag::TabArm { surface, .. }) if surface == second.id));
 
         app.pointer_route_phase = PointerRoutePhase::DrawPending;
@@ -29520,11 +30365,20 @@ mod tests {
         mux.new_workspace(Some("Beta".to_string()), Some((80, 24))).unwrap();
         let (mut app, events) = test_app_with_events(Session::Local(mux.clone()));
         app.session.remote = true;
-        app.sidebar_width = 18;
+
         app.sidebar_view = SidebarView::Workspaces;
+        app.sidebar_width_override = Some(18);
+        app.sync_layout((80, 24));
+        while app.session.has_pending_mutations() {
+            app.handle(events.recv_timeout(Duration::from_secs(1)).unwrap()).unwrap();
+        }
         app.replace_tree(app.session.tree());
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
+        while app.session.has_pending_mutations() {
+            let settled = events.recv_timeout(Duration::from_secs(1)).unwrap();
+            app.handle(settled).unwrap();
+        }
         let alpha = app
             .hits
             .iter()
@@ -29533,6 +30387,8 @@ mod tests {
                 _ => None,
             })
             .expect("rendered Alpha workspace hit");
+
+        let destination_started = app.session.destination_mutation_started();
 
         app.handle(AppEvent::Input(Event::Mouse(MouseEvent {
             kind: MouseEventKind::Up(MouseButton::Left),
@@ -29544,7 +30400,9 @@ mod tests {
 
         assert_eq!(app.tree.active_workspace, 1);
         assert_eq!(mux.with_state(|state| state.active_workspace), 1);
-        assert!(events.try_recv().is_err());
+        assert_eq!(app.session.destination_mutation_started(), destination_started);
+        assert!(app.drag.is_none());
+        assert!(app.active_pointer_buttons.is_empty());
 
         let workspaces: Vec<_> =
             mux.with_state(|state| state.workspaces.iter().map(|workspace| workspace.id).collect());
@@ -30542,6 +31400,48 @@ mod tests {
             app.session.surface_resize_decision(88, (100, 30), true),
             SurfaceResizeDecision::NeedsQueue(_)
         ));
+    }
+
+    #[test]
+    fn resize_of_surface_closed_before_worker_runs_is_not_a_sync_failure() {
+        let mux = Mux::new("surface-closed-during-resize-test", SurfaceOptions::default());
+        let surface = mux.new_workspace(None, Some((80, 24))).unwrap();
+        let (mut app, events) = test_app_with_events(Session::Local(mux.clone()));
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        app.session.operations.enqueue_session_mutation("block resize lane", false, move || {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            Ok(())
+        });
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        let handle = app.session.surface(surface.id).unwrap();
+        let claim = match app.session.surface_resize_decision(surface.id, (78, 22), true) {
+            SurfaceResizeDecision::NeedsQueue(claim) => claim,
+            _ => panic!("resize must queue"),
+        };
+        assert!(app.session.resize_surface(surface.id, handle, 78, 22, false, claim));
+        mux.close_surface(surface.id).unwrap();
+        app.retire_surface_state(surface.id);
+        release_tx.send(()).unwrap();
+
+        let settled = (0..8)
+            .find_map(|_| {
+                let event = events.recv_timeout(Duration::from_secs(1)).unwrap();
+                matches!(event, AppEvent::SessionMutationSettled { .. }).then_some(event)
+            })
+            .expect("resize must settle");
+        assert!(matches!(
+            &settled,
+            AppEvent::SessionMutationSettled {
+                outcome: super::SessionMutationOutcome::Success { tree: None },
+                ..
+            }
+        ));
+        app.handle(settled).unwrap();
+        assert!(app.status_message.is_none());
+        assert!(!app.session.surface_resize_failures.lock().unwrap().contains_key(&surface.id));
     }
 
     #[test]
@@ -31655,7 +32555,8 @@ mod tests {
         ));
 
         assert_eq!(
-            app.handle(AppEvent::Mux(MuxEvent::SurfaceExited(surface))).unwrap(),
+            app.handle(AppEvent::Mux(MuxEvent::SurfaceExited { surface, runtime_ms: None }))
+                .unwrap(),
             RenderAction::Draw
         );
         assert!(!app.tab_locations.contains_key(&surface));
@@ -31938,6 +32839,208 @@ mod tests {
                  リモートサーフェス接続キューがいっぱいです"
             )
         );
+    }
+    #[test]
+    fn established_child_exit_closes_its_last_surface_workspace() {
+        let mux = Mux::new(
+            "established-child-exit-test",
+            SurfaceOptions {
+                command: Some(vec!["/bin/cat".to_string()]),
+                ..SurfaceOptions::default()
+            },
+        );
+        let surface = mux.new_workspace(None, Some((20, 8))).unwrap();
+        let workspace = mux.with_state(|state| state.workspaces[0].id);
+        let (mut app, events) = test_app_with_events(Session::Local(mux.clone()));
+        app.replace_tree(app.session.tree());
+
+        assert_eq!(
+            app.handle(AppEvent::Mux(MuxEvent::SurfaceExited {
+                surface: surface.id,
+                runtime_ms: Some(250),
+            }))
+            .unwrap(),
+            RenderAction::Draw
+        );
+        while app.session.has_pending_mutations() {
+            app.handle(events.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap();
+        }
+
+        assert!(mux.with_state(|state| {
+            state.workspaces.iter().all(|candidate| candidate.id != workspace)
+        }));
+    }
+
+    #[test]
+    fn established_child_exit_preserves_concurrently_added_tab() {
+        let mux = Mux::new(
+            "established-child-exit-multi-tab-test",
+            SurfaceOptions {
+                command: Some(vec!["/bin/cat".to_string()]),
+                ..SurfaceOptions::default()
+            },
+        );
+        let exited = mux.new_workspace(None, Some((20, 8))).unwrap();
+        let workspace = mux.with_state(|state| state.workspaces[0].id);
+        let pane = mux.with_state(|state| state.pane_of(exited.id).unwrap());
+        let (mut app, events) = test_app_with_events(Session::Local(mux.clone()));
+        app.replace_tree(app.session.tree());
+        let surviving = mux.new_tab(Some(pane), None, Some((20, 8))).unwrap();
+
+        assert_eq!(
+            app.handle(AppEvent::Mux(MuxEvent::SurfaceExited {
+                surface: exited.id,
+                runtime_ms: Some(250),
+            }))
+            .unwrap(),
+            RenderAction::Draw
+        );
+        while app.session.has_pending_mutations() {
+            app.handle(events.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap();
+        }
+
+        assert!(mux.surface(exited.id).is_none());
+        assert!(mux.surface(surviving.id).is_some());
+        assert!(mux.with_state(|state| {
+            state.workspaces.iter().any(|candidate| candidate.id == workspace)
+        }));
+        mux.close_surface(surviving.id).unwrap();
+    }
+
+    #[test]
+    fn established_child_exit_decides_close_on_ordered_worker() {
+        let mux = Mux::new(
+            "established-child-exit-ordered-close-test",
+            SurfaceOptions {
+                command: Some(vec!["/bin/cat".to_string()]),
+                ..SurfaceOptions::default()
+            },
+        );
+        let exited = mux.new_workspace(None, Some((20, 8))).unwrap();
+        let workspace = mux.with_state(|state| state.workspaces[0].id);
+        let pane = mux.with_state(|state| state.pane_of(exited.id).unwrap());
+        let (mut app, events) = test_app_with_events(Session::Local(mux.clone()));
+        app.replace_tree(app.session.tree());
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        app.session.operations.enqueue_session_mutation("blocker", false, move || {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            Ok(())
+        });
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        assert_eq!(
+            app.handle(AppEvent::Mux(MuxEvent::SurfaceExited {
+                surface: exited.id,
+                runtime_ms: Some(250),
+            }))
+            .unwrap(),
+            RenderAction::Draw
+        );
+        let surviving = mux.new_tab(Some(pane), None, Some((20, 8))).unwrap();
+        release_tx.send(()).unwrap();
+        while app.session.has_pending_mutations() {
+            app.handle(events.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap();
+        }
+
+        assert!(mux.surface(exited.id).is_none());
+        assert!(mux.surface(surviving.id).is_some());
+        assert!(mux.with_state(|state| {
+            state.workspaces.iter().any(|candidate| candidate.id == workspace)
+        }));
+        mux.close_surface(surviving.id).unwrap();
+    }
+    #[test]
+    fn surface_only_attach_tombstones_an_established_exited_shell() {
+        let mux = Mux::new(
+            "surface-only-established-exit-test",
+            SurfaceOptions {
+                command: Some(vec!["/bin/cat".to_string()]),
+                ..SurfaceOptions::default()
+            },
+        );
+        let surface = mux.new_workspace(None, Some((20, 8))).unwrap();
+        let workspace = mux.with_state(|state| state.workspaces[0].id);
+        let (mut app, events) = test_app_with_events(Session::Local(mux.clone()));
+        app.replace_tree(app.session.tree());
+        app.surface_only = Some(surface.id);
+
+        assert_eq!(
+            app.handle(AppEvent::Mux(MuxEvent::SurfaceExited {
+                surface: surface.id,
+                runtime_ms: Some(250),
+            }))
+            .unwrap(),
+            RenderAction::None
+        );
+        assert!(app.quit);
+        while app.session.has_pending_mutations() {
+            app.handle(events.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap();
+        }
+
+        assert!(mux.with_state(|state| {
+            state.workspaces.iter().all(|candidate| candidate.id != workspace)
+        }));
+    }
+
+    #[test]
+    fn surface_only_startup_failure_quits_without_tombstoning_surface() {
+        let mux = Mux::new(
+            "surface-only-startup-failure-test",
+            SurfaceOptions {
+                command: Some(vec!["/bin/cat".to_string()]),
+                ..SurfaceOptions::default()
+            },
+        );
+        let surface = mux.new_workspace(None, Some((20, 8))).unwrap();
+        let workspace = mux.with_state(|state| state.workspaces[0].id);
+        let mut app = test_app(Session::Local(mux.clone()));
+        app.replace_tree(app.session.tree());
+        app.surface_only = Some(surface.id);
+
+        assert_eq!(
+            app.handle(AppEvent::Mux(MuxEvent::SurfaceExited {
+                surface: surface.id,
+                runtime_ms: Some(249),
+            }))
+            .unwrap(),
+            RenderAction::None
+        );
+
+        assert!(app.quit);
+        assert!(mux.surface(surface.id).is_some());
+        assert!(mux.with_state(|state| {
+            state.workspaces.iter().any(|candidate| candidate.id == workspace)
+        }));
+        mux.close_surface(surface.id).unwrap();
+    }
+
+    #[test]
+    fn startup_failure_exit_remains_visible_below_ghostty_threshold() {
+        let mux = Mux::new(
+            "startup-failure-exit-test",
+            SurfaceOptions {
+                command: Some(vec!["/bin/cat".to_string()]),
+                ..SurfaceOptions::default()
+            },
+        );
+        let surface = mux.new_workspace(None, Some((20, 8))).unwrap();
+        let (mut app, _events) = test_app_with_events(Session::Local(mux.clone()));
+        app.replace_tree(app.session.tree());
+
+        assert_eq!(
+            app.handle(AppEvent::Mux(MuxEvent::SurfaceExited {
+                surface: surface.id,
+                runtime_ms: Some(249),
+            }))
+            .unwrap(),
+            RenderAction::Draw
+        );
+
+        assert!(app.tab_locations.contains_key(&surface.id));
+        assert!(!app.session.has_pending_mutations());
+        mux.close_surface(surface.id).unwrap();
     }
 
     #[test]
@@ -32766,6 +33869,18 @@ mod tests {
         app.session.pending_mutations.store(1, Ordering::Release);
         app.session.pending_pointer_mutations.store(1, Ordering::Release);
 
+        for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+            app.handle(AppEvent::Input(Event::Mouse(MouseEvent {
+                kind,
+                column: 9,
+                row: 3,
+                modifiers: KeyModifiers::NONE,
+            })))
+            .unwrap();
+            assert!(app.deferred_input.is_empty());
+            assert!(app.status_message.is_none());
+        }
+
         app.handle(AppEvent::Input(Event::Mouse(MouseEvent {
             kind: MouseEventKind::Moved,
             column: 14,
@@ -32899,8 +34014,20 @@ mod tests {
         let mut app = test_app(Session::Local(mux));
         app.session.pending_mutations.store(1, Ordering::Release);
 
+        for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+            app.handle(AppEvent::Input(Event::Mouse(MouseEvent {
+                kind,
+                column: 9,
+                row: 3,
+                modifiers: KeyModifiers::NONE,
+            })))
+            .unwrap();
+            assert!(app.deferred_input.is_empty());
+            assert!(app.status_message.is_none());
+        }
+
         app.handle(AppEvent::Input(Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Moved,
+            kind: MouseEventKind::Down(MouseButton::Left),
             column: 9,
             row: 3,
             modifiers: KeyModifiers::NONE,
@@ -32984,7 +34111,8 @@ mod tests {
         let mux = Mux::new("ordered-pointer-motion-test", SurfaceOptions::default());
         let mut app = test_app(Session::Local(mux));
         app.session.pending_mutations.store(1, Ordering::Release);
-        assert!(!app.session.has_pending_pointer_mutations());
+        app.session.pending_pointer_mutations.store(1, Ordering::Release);
+        assert!(app.session.has_pending_pointer_mutations());
 
         app.handle(AppEvent::Input(Event::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -33442,6 +34570,11 @@ mod tests {
         }
         let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
         app.render_action(&mut terminal, RenderAction::Draw).unwrap();
+        while app.session.has_pending_mutations() {
+            let action =
+                app.handle(mutation_events.recv_timeout(Duration::from_secs(1)).unwrap()).unwrap();
+            app.render_action(&mut terminal, action).unwrap();
+        }
         let content = app.pane_areas[0].content;
         let press = (content.x + 4, content.y + 2);
         let select = (press.0 + 1, press.1);
@@ -33704,6 +34837,45 @@ mod tests {
             "the accepted right press must keep ownership through menu render, drag, and release"
         );
         assert!(app.menu.is_none());
+    }
+
+    #[test]
+    fn replayed_right_button_capture_bypasses_pending_ordered_mutation() {
+        let (mux, surface) = test_mux("replayed-menu-capture-barrier-test", None);
+        let mut app = test_app(Session::Local(mux.clone()));
+        app.replace_tree(app.session.tree());
+        let press = (4, 4);
+        let select = (press.0 + 1, press.1);
+        app.menu = Some(ContextMenu::at(
+            press.0,
+            press.1,
+            vec![vec![MenuAction::RenameSurface(surface.id)]],
+        ));
+        app.capture_menu_resources();
+        app.active_pointer_buttons.insert(MouseButton::Right);
+        for kind in
+            [MouseEventKind::Drag(MouseButton::Right), MouseEventKind::Up(MouseButton::Right)]
+        {
+            app.defer_input(Event::Mouse(MouseEvent {
+                kind,
+                column: select.0,
+                row: select.1,
+                modifiers: KeyModifiers::SHIFT,
+            }));
+        }
+        app.session.pending_mutations.store(1, Ordering::Release);
+
+        let replay = app.replay_deferred_input_batch().unwrap();
+
+        app.session.pending_mutations.store(0, Ordering::Release);
+        assert_eq!(replay.disposition, DeferredReplayDisposition::Drained);
+        assert!(
+            app.prompt.is_some(),
+            "frontend-local capture must finish while an ordered backend mutation is pending"
+        );
+        assert!(app.menu.is_none());
+        assert!(app.active_pointer_buttons.is_empty());
+        mux.close_surface(surface.id).unwrap();
     }
 
     #[test]
@@ -34486,44 +35658,101 @@ mod tests {
         );
         let surface = mux.new_workspace(Some("work".to_string()), Some((20, 8))).unwrap();
         let mut app = test_app(Session::Local(mux.clone()));
-        app.sidebar_width = 12;
         app.sidebar_view = SidebarView::Workspaces;
+        app.sidebar_width_override = Some(12);
+        app.sync_layout((80, 12));
         app.replace_tree(notify_tree(surface.id, true));
-        app.pane_areas.push(PaneArea {
+        app.pane_areas = vec![PaneArea {
             pane: 2,
             surface: surface.id,
-            rect: Rect { x: 12, y: 1, width: 26, height: 8 },
-            bar: Some(Rect { x: 12, y: 1, width: 26, height: 1 }),
+            rect: Rect { x: 12, y: 1, width: 66, height: 8 },
+            bar: Some(Rect { x: 12, y: 1, width: 66, height: 1 }),
             omnibar: None,
-            content: Rect { x: 13, y: 2, width: 23, height: 6 },
+            content: Rect { x: 13, y: 2, width: 63, height: 6 },
             track: None,
             viewport: None,
-        });
+        }];
 
-        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
         terminal
             .draw(|frame| {
                 crate::ui::draw(&mut app, frame);
             })
             .unwrap();
+        let tab_bar = app
+            .pane_areas
+            .iter()
+            .find(|area| area.surface == surface.id)
+            .and_then(|area| area.bar)
+            .expect("rendered tab bar");
+        let pane_border_x = tab_bar.x;
+        let tab_bar_y = tab_bar.y;
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(12, 2)].symbol(), "│");
-        assert_eq!(buffer[(12, 2)].style().fg, Some(app.config.theme.notification_warning));
-        assert!(row_contains(buffer, 1, "•"), "tab bar should contain unread dot");
-        assert_eq!(buffer[(0, 2)].symbol(), "▎", "sidebar should retain the active rail");
-        assert_eq!(buffer[(1, 2)].symbol(), "•", "sidebar should contain unread dot");
+        assert_eq!(buffer[(pane_border_x, 2)].symbol(), "│");
+        assert_eq!(
+            buffer[(pane_border_x, 2)].style().fg,
+            Some(app.config.theme.notification_warning)
+        );
+        assert!(row_contains(buffer, tab_bar_y, "•"), "tab bar should contain unread dot");
+        assert!(
+            (0..12).any(|y| buffer[(0, y)].symbol() == "▎"),
+            "sidebar should retain the active rail"
+        );
+        assert!(
+            (0..12).any(|y| buffer[(1, y)].symbol() == "•"),
+            "sidebar should contain unread dot"
+        );
 
         app.replace_tree(notify_tree(surface.id, false));
-        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
         terminal
             .draw(|frame| {
                 crate::ui::draw(&mut app, frame);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(12, 2)].style().fg, Some(app.config.theme.border_active));
-        assert!(!row_contains(buffer, 1, "•"), "tab bar dot should clear");
-        assert_ne!(buffer[(1, 2)].symbol(), "•", "sidebar dot should clear");
+        assert_eq!(buffer[(pane_border_x, 2)].style().fg, Some(app.config.theme.border_active));
+        assert!(!row_contains(buffer, tab_bar_y, "•"), "tab bar dot should clear");
+        assert!((0..12).all(|y| buffer[(1, y)].symbol() != "•"), "sidebar dot should clear");
+
+        mux.close_surface(surface.id).unwrap();
+    }
+
+    #[test]
+    fn omp_root_status_does_not_impersonate_unread_workspace_marker() {
+        let mux = Mux::new("omp-root-unread-marker-test", SurfaceOptions::default());
+        let surface = mux.new_workspace(Some("work".to_string()), Some((20, 8))).unwrap();
+        let mut app = test_app(Session::Local(mux.clone()));
+        app.sidebar_width = 14;
+        app.sidebar_view = SidebarView::Workspaces;
+        app.replace_tree(notify_tree(surface.id, false));
+        app.agent_records.insert(
+            surface.id,
+            AgentRecord {
+                surface: surface.id,
+                terminal_id: agent_terminal_id(surface.id),
+                state: AgentState::Blocked,
+                source: AgentSource::Hook,
+                session: Some("session-root".to_string()),
+                telemetry: AgentTelemetry {
+                    root_session: true,
+                    label: Some("Worker".to_string()),
+                    agents_active: Some(42),
+                    ..AgentTelemetry::default()
+                },
+                updated_at_ms: wall_clock_ms(),
+            },
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        terminal.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        assert_ne!(
+            buffer[(1, 2)].symbol(),
+            "•",
+            "workspace marker is reserved for unread notifications"
+        );
 
         mux.close_surface(surface.id).unwrap();
     }
@@ -34543,14 +35772,15 @@ mod tests {
         );
         let surface = mux.new_workspace(Some("work".to_string()), Some((20, 8))).unwrap();
         let mut app = test_app(Session::Local(mux.clone()));
-        app.sidebar_width = 12;
+        app.sidebar_width_override = Some(12);
         app.config.sidebar.plugin = Some(cmux_tui_core::SidebarPluginOptions {
             command: vec!["/bin/sh".to_string(), "-c".to_string(), "sleep 30".to_string()],
             cwd: None,
         });
+        app.sync_layout((80, 12));
         app.replace_tree(notify_tree(surface.id, false));
 
-        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
         terminal
             .draw(|frame| {
                 crate::ui::draw(&mut app, frame);
@@ -34724,11 +35954,12 @@ mod tests {
         std::fs::write(temp.join("known-sidebar-file.txt"), "hello").unwrap();
         let (mux, surface) = test_mux("files-sidebar-draw-test", Some(&temp));
         let mut app = test_app(Session::Local(mux.clone()));
-        app.sidebar_width = 24;
+        app.sidebar_width_override = Some(24);
+        app.sync_layout((80, 12));
         app.sidebar_files = FileBrowser::new(temp.clone());
         app.tree = notify_tree(surface.id, true);
 
-        let mut terminal = Terminal::new(TestBackend::new(50, 12)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
         terminal.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("known-sidebar-file"), "{text}");
@@ -34780,20 +36011,21 @@ mod tests {
         std::fs::write(temp.join("toggle-marker.txt"), "hello").unwrap();
         let (mux, surface) = test_mux("sidebar-toggle-test", Some(&temp));
         let mut app = test_app(Session::Local(mux.clone()));
-        app.sidebar_width = 24;
+        app.sidebar_width_override = Some(24);
+        app.sync_layout((80, 12));
         app.sidebar_files = FileBrowser::new(temp.clone());
         app.tree = notify_tree(surface.id, false);
         app.focus = FocusTarget::WorkspaceRail;
 
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)).unwrap();
         assert_eq!(app.sidebar_view, SidebarView::Workspaces);
-        let mut terminal = Terminal::new(TestBackend::new(50, 12)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
         terminal.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
         assert!(buffer_text(terminal.backend().buffer()).contains("workspaces"));
 
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)).unwrap();
         assert_eq!(app.sidebar_view, SidebarView::Files);
-        let mut terminal = Terminal::new(TestBackend::new(50, 12)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
         terminal.draw(|frame| crate::ui::draw(&mut app, frame)).unwrap();
         assert!(buffer_text(terminal.backend().buffer()).contains("toggle-marker"));
 
@@ -37389,6 +38621,7 @@ mod tests {
             AgentState::Working,
             AgentSource::Hook,
             Some("agent-session".into()),
+            AgentTelemetry::default(),
         )
         .unwrap();
         let mut app = test_app(Session::Local(mux.clone()));
@@ -37423,6 +38656,7 @@ mod tests {
             AgentState::Working,
             AgentSource::Hook,
             Some("agent-session".into()),
+            AgentTelemetry::default(),
         )
         .unwrap();
         let mut app = test_app(Session::Local(mux.clone()));
@@ -37460,6 +38694,7 @@ mod tests {
             AgentState::Done,
             AgentSource::Hook,
             Some("agent-session".into()),
+            AgentTelemetry::default(),
         )
         .unwrap();
         let mut app = test_app(Session::Local(mux.clone()));
@@ -37610,6 +38845,7 @@ mod tests {
             AgentState::Working,
             AgentSource::Hook,
             Some("agent-session".into()),
+            AgentTelemetry::default(),
         )
         .unwrap();
         let mut app = test_app(Session::Local(mux.clone()));
@@ -39529,6 +40765,9 @@ mod tests {
             default_colors: cmux_tui_core::DefaultColors::default(),
             tree: TreeView::default(),
             tab_locations: HashMap::new(),
+            agent_records: HashMap::new(),
+            agent_observed_at_ms: HashMap::new(),
+            last_agent_elapsed_second: None,
             render_states: HashMap::<u64, RenderState>::new(),
             chrome_row_scratch: crate::ui::ReusableRowBuffer::default(),
             rendered_terminal_sizes: HashMap::new(),
@@ -39599,6 +40838,7 @@ mod tests {
             tabs_sidebar_width_override: None,
             projection_sidebar_width_overrides: HashMap::new(),
             hidden_sidebar_views: HashMap::new(),
+            frame_layout_size: None,
             content_area: Rect::default(),
             hits: Vec::new(),
             tab_scroll: HashMap::new(),
@@ -39615,6 +40855,7 @@ mod tests {
             shortcut_help: None,
             omnibar: None,
             toast: None,
+            notification_banner: None,
             shake_frames: 0,
             selection: None,
             selection_generation: 0,
@@ -39654,6 +40895,10 @@ mod tests {
             quit: false,
         };
         (app, receiver)
+    }
+
+    fn agent_terminal_id(surface: SurfaceId) -> TerminalPublicId {
+        TerminalPublicId::parse(format!("term_{surface:032x}")).unwrap()
     }
 
     fn notify_tree(surface: u64, unread: bool) -> TreeView {
@@ -39844,7 +41089,7 @@ mod tests {
                 command: Some(vec![
                     "/bin/sh".to_string(),
                     "-c".to_string(),
-                    "sleep 30".to_string(),
+                    "sleep 300".to_string(),
                 ]),
                 cwd: cwd.map(|path| path.to_string_lossy().into_owned()),
                 ..Default::default()

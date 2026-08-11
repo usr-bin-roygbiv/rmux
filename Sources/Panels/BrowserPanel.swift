@@ -2972,6 +2972,10 @@ final class BrowserPanel: Panel, ObservableObject {
             }
             self.scheduleBrowserViewportHostRestoration(reason: "webViewHierarchyChanged")
         }
+        webView.onMagnificationDelta = { [weak self, weak webView] delta in
+            guard let self, let webView, self.webView === webView else { return }
+            self.handleMagnificationDelta(delta)
+        }
         DiffCommentsBridge.associate(panelId: id, workspaceId: workspaceId, with: webView)
         webView.onMouseBackButton = { [weak self] in
             self?.goBack()
@@ -4851,8 +4855,9 @@ final class BrowserPanel: Panel, ObservableObject {
     }
 
     func close() {
-        cancelHiddenWebViewDiscard()
+        guard !isClosingWebViewLifecycle else { return }
         isClosingWebViewLifecycle = true
+        hiddenWebViewDiscardManager.shutdown()
         automationNavigationCoordinator.invalidate()
         navigationDelegate?.cancelPendingAuthenticationPrompts()
         mobileBrowserDialogBroker.resolveAll()
@@ -4884,6 +4889,23 @@ final class BrowserPanel: Panel, ObservableObject {
         openAppLinkInBrowserSplit = nil
         detachWebViewObservers()
         faviconTask?.cancel(); faviconTask = nil
+        browserViewportHostRestorationTask?.cancel()
+        browserViewportHostRestorationTask = nil
+        browserViewportHostRestorationPending = false
+
+        // Local inline hosting has no portal registry entry to detach.
+        webView.cmuxBrowserViewportPresentationView.removeFromSuperview()
+
+        let replacement = makeReplacementWebView(
+            profileID: profileID,
+            websiteDataStore: websiteDataStore
+        )
+        shouldRenderWebView = false
+        webViewInstanceID = UUID()
+        hasCommittedDocumentSinceWebViewReplacement = false
+        userStoppedLoadSinceWebViewReplacement = false
+        webView = replacement
+        viewportHostView.installWebView(replacement)
     }
 
     // MARK: - Popup window management
@@ -6152,7 +6174,12 @@ extension BrowserPanel {
             // (`consumeAttachedDeveloperToolsManualCloseIfNeeded`) refuses to
             // run and preserved visible intent can resurrect an inspector the
             // user explicitly closed.
-            resetAutomationViewportForAttachedBrowserInspector()
+            if resetAutomationViewportForAttachedBrowserInspector() {
+                BrowserWindowPortalRegistry.refresh(
+                    webView: webView,
+                    reason: "attachedInspectorPreferenceSync"
+                )
+            }
             setPreferredDeveloperToolsPresentation(.attached)
             developerToolsDetachedOpenGraceDeadline = nil
             if developerToolsLastAttachedHostAt == nil {
@@ -6673,6 +6700,11 @@ extension BrowserPanel {
     func setPageZoomFactor(_ pageZoom: CGFloat) -> Bool {
         let clamped = max(minPageZoom, min(maxPageZoom, pageZoom))
         return pageZoomMutationHandled(applyPageZoom(clamped))
+    }
+
+    func handleMagnificationDelta(_ delta: CGFloat) {
+        guard delta.isFinite else { return }
+        _ = setPageZoomFactor(webView.pageZoom + delta)
     }
 
     /// Take a snapshot of the web view

@@ -207,6 +207,7 @@ MODEL_BY_PATH = {
     'commands/wait-for/request': models.WaitForRequest,
     'commands/zoom-pane/request': models.ZoomPaneRequest,
     'events/agent-changed/payload': models.AgentChangedEvent,
+    'events/agent-state-changed/payload': models.AgentStateChangedEvent,
     'events/bell/payload': models.BellEvent,
     'events/browser-state/payload': models.BrowserStateEvent,
     'events/client-attached/payload': models.ClientAttachedEvent,

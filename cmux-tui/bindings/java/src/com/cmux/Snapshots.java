@@ -281,6 +281,7 @@ public final class Snapshots {
         Ids.NotificationId id,
         Ids.SessionId sessionId,
         String title,
+        Optional<String> subtitle,
         String body,
         String level,
         Optional<Ids.TerminalId> terminalId,
@@ -292,6 +293,7 @@ public final class Snapshots {
             Objects.requireNonNull(id, "id");
             Objects.requireNonNull(sessionId, "sessionId");
             Objects.requireNonNull(title, "title");
+            subtitle = opt(subtitle);
             Objects.requireNonNull(body, "body");
             oneOf(level, "level", "info", "warning", "error");
             terminalId = opt(terminalId);
@@ -308,16 +310,40 @@ public final class Snapshots {
         String source,
         Decimal updatedAtMS,
         Optional<String> sourceSession,
+        boolean rootSession,
+        Optional<String> label,
+        Optional<String> detail,
+        Optional<Decimal> startedAtMS,
+        Optional<Decimal> tasksCompleted,
+        Optional<Decimal> tasksTotal,
+        Optional<Decimal> jobsRunning,
+        Optional<Decimal> agentsActive,
         Map<String, Object> extra
     ) implements ResourceEntitySnapshot {
         public AgentSnapshot {
             Objects.requireNonNull(id, "id");
             Objects.requireNonNull(sessionId, "sessionId");
             Objects.requireNonNull(terminalId, "terminalId");
-            oneOf(state, "state", "working", "blocked", "idle", "done", "unknown");
+            oneOf(
+                state,
+                "state",
+                "working",
+                "blocked",
+                "idle",
+                "done",
+                "error",
+                "unknown"
+            );
             oneOf(source, "source", "hook", "socket", "detected");
             Objects.requireNonNull(updatedAtMS, "updatedAtMS");
             sourceSession = opt(sourceSession);
+            label = opt(label);
+            detail = opt(detail);
+            startedAtMS = opt(startedAtMS);
+            tasksCompleted = opt(tasksCompleted);
+            tasksTotal = opt(tasksTotal);
+            jobsRunning = opt(jobsRunning);
+            agentsActive = opt(agentsActive);
             extra = copy(extra);
         }
     }

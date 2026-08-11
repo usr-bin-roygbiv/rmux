@@ -216,6 +216,7 @@ func (bot *Bot) notify(
 		Title:      title,
 		Body:       body,
 		Level:      cmux.OptionalString(level),
+		Subtitle:   cmux.NullString(),
 		TerminalID: &result.Terminal,
 	})
 	if err != nil {

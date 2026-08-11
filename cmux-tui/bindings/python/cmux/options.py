@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import math
 import threading
-from dataclasses import dataclass
-from typing import Literal, Optional, Sequence, Tuple
+from dataclasses import dataclass, field
+from typing import Literal, Optional, Sequence, Tuple, Union
 
 from .ids import TerminalId
 from .models import Command, Cursor, LayoutDocument
@@ -11,6 +11,12 @@ from .models import Command, Cursor, LayoutDocument
 
 Direction = Literal["left", "right", "up", "down"]
 InitialContent = Literal["terminal", "empty"]
+
+class _UnsetType:
+    __slots__ = ()
+
+
+_UNSET = _UnsetType()
 
 
 def _validate_correlation_key(value: Optional[str]) -> None:
@@ -256,6 +262,10 @@ class NotificationOptions:
     body: str
     level: Optional[str] = None
     terminal_id: Optional[TerminalId] = None
+    subtitle: Union[str, None, _UnsetType] = field(
+        default=_UNSET,
+        metadata={"encode_none": True},
+    )
 
 
 @dataclass(frozen=True)
@@ -264,6 +274,14 @@ class AgentReportOptions:
     state: str
     source: Literal["hook", "socket"]
     source_session: Optional[str] = None
+    root_session: Optional[bool] = None
+    label: Optional[str] = None
+    detail: Optional[str] = None
+    started_at_ms: Optional[int] = None
+    tasks_completed: Optional[int] = None
+    tasks_total: Optional[int] = None
+    jobs_running: Optional[int] = None
+    agents_active: Optional[int] = None
 
 
 @dataclass(frozen=True)

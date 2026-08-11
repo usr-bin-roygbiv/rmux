@@ -1,0 +1,225 @@
+steps:
+  privacy-source:
+    image: public.ecr.aws/docker/library/python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7
+    commands:
+      - python3 scripts/integration/privacy_gate.py --manifest integration/nightly/public-files.txt --require-runtime-denylist
+    environment:
+      CMUX_PRIVACY_DENYLIST_JSON:
+        from_secret: CMUX_PRIVACY_DENYLIST_JSON
+    backend_options:
+      kubernetes:
+        serviceAccountName: woodpecker-ci-untrusted
+
+  cache-image-contract:
+    depends_on: [privacy-source]
+    image: public.ecr.aws/docker/library/python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7
+    commands:
+      - python3 tests/test_nightly_ci_hardening.py PublicImageAndOmpIsolationTests.test_multistage_cache_image_replaces_runtime_bootstrap
+    backend_options:
+      kubernetes:
+        serviceAccountName: woodpecker-ci-untrusted
+        resources:
+          requests:
+            memory: 2Gi
+          limits:
+            memory: 4Gi
+
+  build-ci-image:
+    depends_on: [cache-image-contract]
+    image: ${RMUX_CI_BUILDER_IMAGE}
+    commands:
+      - umask 077 && mkdir -p "$HOME/.docker" .integration-results/ci-image
+      - printf '%s' "$RMUX_REGISTRY_AUTH_JSON" > "$HOME/.docker/config.json"
+      - export DOCKER_CONFIG="$HOME/.docker" DEPS_CACHE_REF="${RMUX_CI_REGISTRY}/linkedin-bot/rmux-ci:deps-buildcache" DEPS_IMAGE_REF="${RMUX_CI_REGISTRY}/linkedin-bot/rmux-ci:deps-cache" && buildctl --addr "tcp://${RMUX_BUILDKIT_HOST}:1234" build --frontend dockerfile.v0 --local context=. --local dockerfile=. --opt filename=ci/rmux-ci.Dockerfile --opt target=rust-deps --import-cache type=registry,ref="$DEPS_CACHE_REF" --export-cache type=registry,ref="$DEPS_CACHE_REF",mode=max,compression=zstd,compression-level=3,force-compression=true --output "type=image,name=$DEPS_IMAGE_REF,name-canonical=true,push=true,compression=zstd,compression-level=3,force-compression=true"
+      - export DOCKER_CONFIG="$HOME/.docker" RMUX_SOURCE_TREE="$(git rev-parse HEAD:cmux-tui)" IMAGE_REF="${RMUX_CI_REGISTRY}/linkedin-bot/rmux-ci:sha-${CI_COMMIT_SHA}" DEPS_CACHE_REF="${RMUX_CI_REGISTRY}/linkedin-bot/rmux-ci:deps-buildcache" SOURCE_CACHE_REF="${RMUX_CI_REGISTRY}/linkedin-bot/rmux-ci:source-buildcache" && test -n "$RMUX_SOURCE_TREE" && buildctl --addr "tcp://${RMUX_BUILDKIT_HOST}:1234" build --frontend dockerfile.v0 --local context=. --local dockerfile=. --opt filename=ci/rmux-ci.Dockerfile --opt build-arg:RMUX_BUILD_COMMIT=$RMUX_SOURCE_TREE --opt attest:provenance=mode=max --import-cache type=registry,ref="$DEPS_CACHE_REF" --import-cache type=registry,ref="$SOURCE_CACHE_REF" --export-cache type=registry,ref="$SOURCE_CACHE_REF",mode=max,compression=zstd,compression-level=3,force-compression=true --metadata-file .integration-results/ci-image/buildkit-metadata.json --output "type=image,name=$IMAGE_REF,name-canonical=true,push=true,compression=zstd,compression-level=3,force-compression=true"
+      - rm -f "$HOME/.docker/config.json"
+    environment:
+      RMUX_REGISTRY_AUTH_JSON:
+        from_secret: RMUX_REGISTRY_AUTH_JSON
+    backend_options:
+      kubernetes:
+        serviceAccountName: woodpecker-ci-untrusted
+        resources:
+          requests:
+            memory: 128Mi
+          limits:
+            memory: 512Mi
+
+  preflight-rust:
+    depends_on: [build-ci-image]
+    image: ${RMUX_CI_PULL_REGISTRY}/linkedin-bot/rmux-ci:sha-${CI_COMMIT_SHA}
+    commands:
+      - test -x /usr/local/bin/zig && test -s /opt/ghostty/src/unicode/lut.zig
+      - python3 scripts/integration/nightly.py preflight-rust --agent-uid 65532
+    backend_options:
+      kubernetes:
+        serviceAccountName: woodpecker-ci-untrusted
+        resources:
+          requests:
+            cpu: "2"
+            memory: 2Gi
+          limits:
+            cpu: "4"
+            memory: 6Gi
+
+  preflight-node:
+    depends_on: [build-ci-image]
+    image: ${RMUX_CI_PULL_REGISTRY}/linkedin-bot/rmux-ci:sha-${CI_COMMIT_SHA}
+    commands:
+      - npm --prefix cmux-tui/bindings/typescript ci --no-audit --no-fund --prefer-offline
+      - npm --prefix cmux-tui/bindings/typescript test
+    backend_options:
+      kubernetes:
+        serviceAccountName: woodpecker-ci-untrusted
+
+  preflight-python:
+    depends_on: [build-ci-image]
+    image: ${RMUX_CI_PULL_REGISTRY}/linkedin-bot/rmux-ci:sha-${CI_COMMIT_SHA}
+    commands:
+      - PYTHONPATH=cmux-tui/bindings/python python3 -m unittest discover -s cmux-tui/bindings/python/tests
+      - python3 -m pytest -q tests/test_perf_*.py
+      - python3 tests/test_integration_nightly_automation.py
+      - python3 tests/test_nightly_ci_hardening.py
+      - python3 tests/test_private_native_control.py
+    backend_options:
+      kubernetes:
+        serviceAccountName: woodpecker-ci-untrusted
+
+  prepare-candidate:
+    depends_on: [preflight-rust, preflight-node, preflight-python]
+    image: ${RMUX_CI_PULL_REGISTRY}/linkedin-bot/rmux-ci:sha-${CI_COMMIT_SHA}
+    commands:
+      - python3 scripts/integration/nightly.py prepare --source-sha ${CI_COMMIT_SHA} --pair-state .integration-results/nightly-pair.json
+    backend_options:
+      kubernetes:
+        serviceAccountName: woodpecker-ci-untrusted
+
+  reconcile-candidate:
+    depends_on: [prepare-candidate]
+    image: ${RMUX_CI_PULL_REGISTRY}/linkedin-bot/rmux-ci:sha-${CI_COMMIT_SHA}
+    commands:
+      - >-
+        python3 scripts/integration/nightly.py reconcile
+        --pair-state .integration-results/nightly-pair.json
+        --agent-uid 65532 --
+        bun x --bun @oh-my-pi/pi-coding-agent@17.1.6
+        --model=gpt-proxy/gpt-5.6-sol
+        --thinking=xhigh
+        --print
+        --approval-mode=yolo
+        --no-session
+        --no-extensions
+        --no-skills
+        --no-rules
+        --no-prewalk
+        --no-lsp
+        --tools=read,write,edit,grep,find
+        "Reconcile the prepared aggregate with upstream main. Edit only existing paths listed in integration/nightly/product-files.txt. Do not create, delete, or rename files. Change only product implementation, product tests, and product documentation required for coherence. Do not change automation, CI, privacy, benchmarks, manifests, dependencies, or git state. Do not run tests, builds, formatters, linters, or network commands."
+    environment:
+      GPT_PROXY_BASE_URL:
+        from_secret: GPT_PROXY_BASE_URL
+      PI_GPT_PROXY_API_KEY:
+        from_secret: PI_GPT_PROXY_API_KEY
+    backend_options:
+      kubernetes:
+        serviceAccountName: woodpecker-ci-untrusted
+
+  privacy-candidate:
+    depends_on: [reconcile-candidate]
+    image: ${RMUX_CI_PULL_REGISTRY}/linkedin-bot/rmux-ci:sha-${CI_COMMIT_SHA}
+    commands:
+      - python3 scripts/integration/nightly.py privacy --pair-state .integration-results/nightly-pair.json
+    environment:
+      CMUX_PRIVACY_DENYLIST_JSON:
+        from_secret: CMUX_PRIVACY_DENYLIST_JSON
+    backend_options:
+      kubernetes:
+        serviceAccountName: woodpecker-ci-untrusted
+
+  validate-candidate-rust:
+    depends_on: [privacy-candidate]
+    image: ${RMUX_CI_PULL_REGISTRY}/linkedin-bot/rmux-ci:sha-${CI_COMMIT_SHA}
+    commands:
+      - python3 scripts/integration/nightly.py validate-rust --pair-state .integration-results/nightly-pair.json --agent-uid 65532
+    backend_options:
+      kubernetes:
+        serviceAccountName: woodpecker-ci-untrusted
+        resources:
+          requests:
+            cpu: "2"
+            memory: 2Gi
+          limits:
+            cpu: "4"
+            memory: 6Gi
+
+  validate-candidate-node:
+    depends_on: [privacy-candidate]
+    image: ${RMUX_CI_PULL_REGISTRY}/linkedin-bot/rmux-ci:sha-${CI_COMMIT_SHA}
+    commands:
+      - python3 scripts/integration/nightly.py validate-node --pair-state .integration-results/nightly-pair.json --agent-uid 65532
+    backend_options:
+      kubernetes:
+        serviceAccountName: woodpecker-ci-untrusted
+
+  validate-candidate-python:
+    depends_on: [privacy-candidate]
+    image: ${RMUX_CI_PULL_REGISTRY}/linkedin-bot/rmux-ci:sha-${CI_COMMIT_SHA}
+    commands:
+      - python3 scripts/integration/nightly.py validate-python --pair-state .integration-results/nightly-pair.json --agent-uid 65532
+    backend_options:
+      kubernetes:
+        serviceAccountName: woodpecker-ci-untrusted
+
+  push-candidate:
+    depends_on: [validate-candidate-rust, validate-candidate-node, validate-candidate-python]
+    image: ${RMUX_CI_PULL_REGISTRY}/linkedin-bot/rmux-ci:sha-${CI_COMMIT_SHA}
+    commands:
+      - python3 scripts/integration/nightly.py push-candidate --pair-state .integration-results/nightly-pair.json
+    environment:
+      CMUX_FORK_PUSH_TOKEN:
+        from_secret: CMUX_FORK_PUSH_TOKEN
+    backend_options:
+      kubernetes:
+        serviceAccountName: woodpecker-ci-untrusted
+
+  render-nightly-report:
+    depends_on: [push-candidate]
+    image: ${RMUX_CI_PULL_REGISTRY}/linkedin-bot/rmux-ci:sha-${CI_COMMIT_SHA}
+    commands:
+      - python3 scripts/integration/nightly.py render-report --pair-state .integration-results/nightly-pair.json --benchmark-summary .integration-results/benchmark-summary.json
+    environment:
+      CMUX_PRIVACY_DENYLIST_JSON:
+        from_secret: CMUX_PRIVACY_DENYLIST_JSON
+    backend_options:
+      kubernetes:
+        serviceAccountName: woodpecker-ci-untrusted
+
+  push-nightly-report:
+    depends_on: [render-nightly-report]
+    image: ${RMUX_CI_PULL_REGISTRY}/linkedin-bot/rmux-ci:sha-${CI_COMMIT_SHA}
+    commands:
+      - python3 scripts/integration/nightly.py push-report --pair-state .integration-results/nightly-pair.json
+    environment:
+      CMUX_FORK_PUSH_TOKEN:
+        from_secret: CMUX_FORK_PUSH_TOKEN
+    backend_options:
+      kubernetes:
+        serviceAccountName: woodpecker-ci-untrusted
+
+  publish-report-status:
+    depends_on: [push-nightly-report]
+    image: ${RMUX_CI_PULL_REGISTRY}/linkedin-bot/rmux-ci:sha-${CI_COMMIT_SHA}
+    commands:
+      - python3 scripts/integration/nightly.py publish-status --pair-state .integration-results/nightly-pair.json
+    environment:
+      GITHUB_TOKEN:
+        from_secret: GITHUB_TOKEN
+    backend_options:
+      kubernetes:
+        serviceAccountName: woodpecker-ci-untrusted
+
+when:
+  - event: manual
+  - event: cron
+    cron: nightly-integration-daily
+    branch: main

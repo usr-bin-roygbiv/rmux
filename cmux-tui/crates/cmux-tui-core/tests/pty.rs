@@ -314,9 +314,12 @@ fn surface_exit_detaches_terminal_view_and_emits_event() {
 
     let got = wait_for(
         || {
-            events
-                .try_iter()
-                .find(|e| matches!(e, MuxEvent::SurfaceExited(id) if *id == surface.id))
+            events.try_iter().find(|event| {
+                matches!(
+                    event,
+                    MuxEvent::SurfaceExited { surface: id, .. } if *id == surface.id
+                )
+            })
         },
         Duration::from_secs(10),
     );
@@ -2048,7 +2051,7 @@ fn send_paste_wraps_only_while_dec_mode_2004_is_enabled() {
             "id": 1,
             "cmd": "send",
             "surface": surface.id,
-            "text": "hi",
+            "text": "\u{1b}[200~hi\u{1b}[201~",
             "paste": true,
         }),
     );

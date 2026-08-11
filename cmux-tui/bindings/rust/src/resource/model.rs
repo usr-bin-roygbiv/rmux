@@ -682,6 +682,8 @@ pub struct NotificationSnapshot {
     pub id: NotificationId,
     pub session_id: SessionId,
     pub title: String,
+    #[serde(deserialize_with = "deserialize_nullable")]
+    pub subtitle: Option<String>,
     pub body: String,
     pub level: NotificationLevel,
     #[serde(default, deserialize_with = "deserialize_optional_non_null")]
@@ -715,6 +717,21 @@ pub struct AgentSnapshot {
     pub updated_at_ms: u64,
     #[serde(deserialize_with = "deserialize_nullable")]
     pub source_session: Option<String>,
+    pub root_session: bool,
+    #[serde(deserialize_with = "deserialize_nullable")]
+    pub label: Option<String>,
+    #[serde(deserialize_with = "deserialize_nullable")]
+    pub detail: Option<String>,
+    #[serde(deserialize_with = "deserialize_nullable_decimal")]
+    pub started_at_ms: Option<u64>,
+    #[serde(deserialize_with = "deserialize_nullable_decimal")]
+    pub tasks_completed: Option<u64>,
+    #[serde(deserialize_with = "deserialize_nullable_decimal")]
+    pub tasks_total: Option<u64>,
+    #[serde(deserialize_with = "deserialize_nullable_decimal")]
+    pub jobs_running: Option<u64>,
+    #[serde(deserialize_with = "deserialize_nullable_decimal")]
+    pub agents_active: Option<u64>,
     #[serde(default)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -1489,19 +1506,25 @@ where
     deserialize_generation(deserializer).map(Some)
 }
 
-fn deserialize_decimal<'de, D>(deserializer: D) -> Result<u64, D::Error>
+fn parse_decimal<E>(value: String) -> Result<u64, E>
 where
-    D: Deserializer<'de>,
+    E: serde::de::Error,
 {
-    let value = String::deserialize(deserializer)?;
     if value.is_empty()
         || value.starts_with('+')
         || (value.starts_with('0') && value.len() > 1)
         || !value.bytes().all(|byte| byte.is_ascii_digit())
     {
-        return Err(serde::de::Error::custom("decimal must be a canonical uint64 string"));
+        return Err(E::custom("decimal must be a canonical uint64 string"));
     }
-    value.parse().map_err(serde::de::Error::custom)
+    value.parse().map_err(E::custom)
+}
+
+fn deserialize_decimal<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    parse_decimal(String::deserialize(deserializer)?)
 }
 
 fn deserialize_optional_decimal<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
@@ -1509,6 +1532,13 @@ where
     D: Deserializer<'de>,
 {
     deserialize_decimal(deserializer).map(Some)
+}
+
+fn deserialize_nullable_decimal<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer)?.map(parse_decimal).transpose()
 }
 
 fn deserialize_positive_i32<'de, D>(deserializer: D) -> Result<i32, D::Error>

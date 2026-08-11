@@ -22,6 +22,7 @@ from cmux import (
     MachineId,
     MutationIndeterminateError,
     MutationTransportError,
+    NotificationId,
     PairingRequestId,
     PaneId,
     RendererGrant,
@@ -44,6 +45,7 @@ from cmux.options import (
     CreateScreenOptions,
     CreateTerminalOptions,
     CreateWorkspaceOptions,
+    NotificationOptions,
     RequestOptions,
     RunOptions,
     SplitPaneOptions,
@@ -67,6 +69,7 @@ PROJECTED_TAB = TabId(f"tab_{HEX_C}")
 CONNECTED_CLIENT = ConnectedClientId(f"client_{HEX_C}")
 PAIRING_REQUEST = PairingRequestId(f"pairing_{HEX_A}")
 AGENT = AgentId(f"agent_{HEX_B}")
+NOTIFICATION = NotificationId(f"notification_{HEX_C}")
 
 
 def frames(connection):
@@ -439,8 +442,68 @@ class ResourceApiTests(unittest.TestCase):
         def handler(connection, _index):
             for request in frames(connection):
                 observed.append(request)
-                if request["operation"] in {"notification.list", "agent.list"}:
-                    ok(connection, request, [])
+                if request["operation"] == "notification.list":
+                    ok(
+                        connection,
+                        request,
+                        [
+                            {
+                                "id": str(NOTIFICATION),
+                                "session_id": str(SESSION),
+                                "title": "Build complete",
+                                "subtitle": "Nightly",
+                                "body": "All checks passed",
+                                "level": "info",
+                                "terminal_id": str(TERMINAL),
+                                "created_at_ms": "11",
+                                "unread": True,
+                            }
+                        ],
+                    )
+                elif request["operation"] == "agent.list":
+                    ok(
+                        connection,
+                        request,
+                        [
+                            {
+                                "id": str(AGENT),
+                                "session_id": str(SESSION),
+                                "terminal_id": str(TERMINAL),
+                                "state": "error",
+                                "source": "detected",
+                                "source_session": None,
+                                "updated_at_ms": "10",
+                                "root_session": True,
+                                "label": "root agent",
+                                "detail": "worker failed",
+                                "started_at_ms": "18446744073709551615",
+                                "tasks_completed": "3",
+                                "tasks_total": "5",
+                                "jobs_running": "2",
+                                "agents_active": "4",
+                            }
+                        ],
+                    )
+                elif request["operation"] == "notification.create":
+                    ok(
+                        connection,
+                        request,
+                        {
+                            "value": {
+                                "id": str(NOTIFICATION),
+                                "session_id": str(SESSION),
+                                "title": request["params"]["title"],
+                                "subtitle": request["params"].get("subtitle"),
+                                "body": request["params"]["body"],
+                                "level": "info",
+                                "created_at_ms": "11",
+                                "unread": True,
+                            },
+                            "generation": "generation-a",
+                            "revision": "9",
+                            "replayed": False,
+                        },
+                    )
                 elif request["operation"] == "agent.report":
                     ok(
                         connection,
@@ -454,6 +517,14 @@ class ResourceApiTests(unittest.TestCase):
                                 "source": "socket",
                                 "source_session": "codex-1",
                                 "updated_at_ms": "10",
+                                "root_session": True,
+                                "label": "root agent",
+                                "detail": "running tests",
+                                "started_at_ms": "18446744073709551615",
+                                "tasks_completed": "3",
+                                "tasks_total": "5",
+                                "jobs_running": "2",
+                                "agents_active": "4",
                             },
                             "generation": "generation-a",
                             "revision": "9",
@@ -527,20 +598,56 @@ class ResourceApiTests(unittest.TestCase):
                     (PANE,),
                 )
                 session = client.session(SESSION)
-                self.assertEqual(session.list_notifications(limit=7), [])
-                self.assertEqual(
-                    session.list_agents(
-                        terminal_id=TERMINAL,
-                        state="working",
-                    ),
-                    [],
+                notifications = session.list_notifications(limit=7)
+                self.assertEqual(len(notifications), 1)
+                self.assertEqual(notifications[0].snapshot.subtitle, "Nightly")
+                agents = session.list_agents(
+                    terminal_id=TERMINAL,
+                    state="error",
                 )
+                self.assertEqual(len(agents), 1)
+                agent_snapshot = agents[0].snapshot
+                self.assertEqual(agent_snapshot.state, "error")
+                self.assertEqual(agent_snapshot.source, "detected")
+                self.assertTrue(agent_snapshot.root_session)
+                self.assertEqual(agent_snapshot.label, "root agent")
+                self.assertEqual(agent_snapshot.detail, "worker failed")
+                self.assertEqual(
+                    agent_snapshot.started_at_ms,
+                    18_446_744_073_709_551_615,
+                )
+                self.assertEqual(agent_snapshot.tasks_completed, 3)
+                self.assertEqual(agent_snapshot.tasks_total, 5)
+                self.assertEqual(agent_snapshot.jobs_running, 2)
+                self.assertEqual(agent_snapshot.agents_active, 4)
+                session.create_notification(
+                    NotificationOptions(
+                        title="No subtitle",
+                        body="Omitted field",
+                    )
+                )
+                created = session.create_notification(
+                    NotificationOptions(
+                        title="Null subtitle",
+                        body="Explicit null field",
+                        subtitle=None,
+                    )
+                )
+                self.assertIsNone(created.value.snapshot.subtitle)
                 reported = session.report_agent(
                     AgentReportOptions(
                         terminal_id=TERMINAL,
                         state="working",
                         source="socket",
                         source_session="codex-1",
+                        root_session=True,
+                        label="root agent",
+                        detail="running tests",
+                        started_at_ms=18_446_744_073_709_551_615,
+                        tasks_completed=3,
+                        tasks_total=5,
+                        jobs_running=2,
+                        agents_active=4,
                     ),
                     idempotency_key="agent-status",
                     expected_revision="9",
@@ -571,7 +678,7 @@ class ResourceApiTests(unittest.TestCase):
         )
         self.assertEqual(
             by_operation["agent.list"]["params"]["state"],
-            "working",
+            "error",
         )
         self.assertEqual(
             by_operation["agent.report"]["idempotency_key"],
@@ -586,10 +693,25 @@ class ResourceApiTests(unittest.TestCase):
                 "state": "working",
                 "source": "socket",
                 "source_session": "codex-1",
+                "root_session": True,
+                "label": "root agent",
+                "detail": "running tests",
+                "started_at_ms": "18446744073709551615",
+                "tasks_completed": "3",
+                "tasks_total": "5",
+                "jobs_running": "2",
+                "agents_active": "4",
                 "expected_revision": "9",
             },
         )
         self.assertNotIn("agent", by_operation["agent.report"]["params"])
+        notification_creates = [
+            item
+            for item in observed
+            if item["operation"] == "notification.create"
+        ]
+        self.assertNotIn("subtitle", notification_creates[0]["params"])
+        self.assertIsNone(notification_creates[1]["params"]["subtitle"])
 
     def test_browser_pointer_frame_tokens_are_exact_decimal_strings(self) -> None:
         observed = []
@@ -3717,6 +3839,7 @@ class ResourceApiTests(unittest.TestCase):
                     )
                     if not overflow_by_bytes:
                         send_frame(connection, item(2, "y"))
+                    ok(connection, opened, {"stream_id": stream_id})
 
                     canceled = next(requests)
                     self.assertEqual(
@@ -3728,7 +3851,6 @@ class ResourceApiTests(unittest.TestCase):
                         stream_id,
                     )
                     ok(connection, canceled, {})
-                    ok(connection, opened, {"stream_id": stream_id})
 
                     ping = next(requests)
                     self.assertEqual(ping["operation"], "session.ping")
@@ -3746,7 +3868,24 @@ class ResourceApiTests(unittest.TestCase):
 
                 with UnixJsonServer(handler) as server:
                     with Client(server.path) as client:
-                        stream = client.session(SESSION).events()
+                        send_encoded = client._connection._wire._send_encoded
+
+                        def wait_for_overflow_before_send_callback(encoded):
+                            with client._connection._lock:
+                                open_state = next(
+                                    iter(client._connection._streams.values())
+                                )
+                            send_encoded(encoded)
+                            self.assertTrue(open_state.end_event.wait(1))
+
+                        with patch.object(
+                            client._connection._wire,
+                            "_send_encoded",
+                            side_effect=wait_for_overflow_before_send_callback,
+                        ):
+                            stream = client.session(SESSION).events()
+                        # Inbound stream traffic proves the open was dispatched
+                        # even while the outbound send callback is still pending.
                         with self.assertRaises(cmux.StreamError):
                             next(stream)
                         self.assertTrue(

@@ -1,6 +1,7 @@
 import AppKit
 import CmuxRemoteSession
 import CmuxTerminal
+import CmuxTerminalCore
 import Foundation
 import Testing
 
@@ -1816,17 +1817,18 @@ import Testing
         guard ghostty_surface_read_text(runtimeSurface, selection, &text) else { return "" }
         defer { ghostty_surface_free_text(runtimeSurface, &text) }
         guard let pointer = text.text, text.text_len > 0 else { return "" }
-        return String(decoding: Data(bytes: pointer, count: Int(text.text_len)), as: UTF8.self)
+        let bytes = UnsafeRawBufferPointer(start: pointer, count: Int(text.text_len))
+        return TerminalTextFormatter.decode(bytes)
     }
 
     private func readFullTerminalText(_ surface: TerminalSurface) throws -> String {
-        let snapshot = TerminalController.TerminalTextRawSnapshot(
+        let snapshot = TerminalTextSnapshot(
             viewport: nil,
             screen: try readTerminalText(surface, pointTag: GHOSTTY_POINT_SCREEN),
             history: try readTerminalText(surface, pointTag: GHOSTTY_POINT_SURFACE),
             active: try readTerminalText(surface, pointTag: GHOSTTY_POINT_ACTIVE)
         )
-        switch TerminalController.terminalTextPayload(
+        switch TerminalTextFormatter.payload(
             from: snapshot,
             includeScrollback: true,
             lineLimit: nil

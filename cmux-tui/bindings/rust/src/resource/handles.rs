@@ -70,6 +70,22 @@ fn label_params(options: LabelOptions) -> Params {
     Params::new().value(field::NAME, options.name.map_or(Value::Null, Value::String))
 }
 
+fn nullable_string_param(params: Params, key: &'static str, value: Update<String>) -> Params {
+    match value {
+        Update::Unchanged => params,
+        Update::Clear => params.value(key, Value::Null),
+        Update::Set(value) => params.string(key, value),
+    }
+}
+
+fn nullable_u64_param(params: Params, key: &'static str, value: Update<u64>) -> Params {
+    match value {
+        Update::Unchanged => params,
+        Update::Clear => params.value(key, Value::Null),
+        Update::Set(value) => params.u64(key, value),
+    }
+}
+
 fn metadata_params(options: ClientMetadataOptions) -> Result<Params> {
     if matches!(&options.name, Update::Unchanged) && matches!(&options.kind, Update::Unchanged) {
         return Err(Error::InvalidArgument(
@@ -2184,18 +2200,12 @@ impl Session {
         if options.title.is_empty() {
             return Err(Error::InvalidArgument("notification title must not be empty".to_string()));
         }
-        let value = self.client.mutate(
-            ops::NOTIFICATION_CREATE,
-            self.params()
-                .string(field::TITLE, options.title)
-                .string(field::BODY, options.body)
-                .optional_string(
-                    field::LEVEL,
-                    options.level.map(|level| level.wire_name().to_string()),
-                )
-                .optional_id(field::TERMINAL_ID, options.terminal_id.as_ref()),
-            mutation,
-        )?;
+        let params =
+            self.params().string(field::TITLE, options.title).string(field::BODY, options.body);
+        let params = nullable_string_param(params, "subtitle", options.subtitle)
+            .optional_string(field::LEVEL, options.level.map(|level| level.wire_name().to_string()))
+            .optional_id(field::TERMINAL_ID, options.terminal_id.as_ref());
+        let value = self.client.mutate(ops::NOTIFICATION_CREATE, params, mutation)?;
         mutation_snapshot(value, "notification")
     }
 
@@ -2232,15 +2242,21 @@ impl Session {
         options: AgentReportOptions,
         mutation: MutationOptions,
     ) -> Result<MutationResult<AgentSnapshot>> {
-        let value = self.client.mutate(
-            ops::AGENT_REPORT,
-            self.params()
-                .id(field::TERMINAL_ID, &options.terminal_id)
-                .string(field::STATE, options.state.wire_name())
-                .string(field::SOURCE, options.source.wire_name())
-                .optional_string(field::SOURCE_SESSION, options.source_session),
-            mutation,
-        )?;
+        let params = self
+            .params()
+            .id(field::TERMINAL_ID, &options.terminal_id)
+            .string(field::STATE, options.state.wire_name())
+            .string(field::SOURCE, options.source.wire_name())
+            .optional_string(field::SOURCE_SESSION, options.source_session)
+            .optional_bool("root_session", options.root_session);
+        let params = nullable_string_param(params, "label", options.label);
+        let params = nullable_string_param(params, "detail", options.detail);
+        let params = nullable_u64_param(params, "started_at_ms", options.started_at_ms);
+        let params = nullable_u64_param(params, "tasks_completed", options.tasks_completed);
+        let params = nullable_u64_param(params, "tasks_total", options.tasks_total);
+        let params = nullable_u64_param(params, "jobs_running", options.jobs_running);
+        let params = nullable_u64_param(params, "agents_active", options.agents_active);
+        let value = self.client.mutate(ops::AGENT_REPORT, params, mutation)?;
         mutation_snapshot(value, "agent")
     }
 

@@ -2399,6 +2399,7 @@ impl WorkspaceRegistry {
                     "INSERT OR IGNORE INTO meta(key, value) VALUES('resource_revision', '0')",
                     [],
                 )?;
+                migrate_resource_tabs_to_multiview(&tx)?;
                 ensure_session_public_id(&tx)?;
                 backfill_workspace_public_ids(&tx)?;
                 migrate_resource_agent_projections(&tx)?;

@@ -28,6 +28,8 @@ use crate::process_diagnostics::BoundedDiagnosticBuffer;
 
 const PROVIDER_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const COMMAND_TERMINATION_GRACE: Duration = Duration::from_millis(250);
+const COMMAND_SPAWN_BUSY_RETRIES: usize = 20;
+const COMMAND_SPAWN_BUSY_BACKOFF: Duration = Duration::from_millis(5);
 const COMMAND_DIAGNOSTIC_BYTES: usize = 16 * 1024;
 const PRIVATE_PATH_ATTEMPTS: usize = 16;
 
@@ -509,9 +511,25 @@ fn spawn_command(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(|error| {
-        io::Error::new(error.kind(), format!("failed to start machine-provider command: {error}"))
-    })?;
+    let mut busy_retries = 0;
+    let mut child = loop {
+        match command.spawn() {
+            Ok(child) => break child,
+            Err(error)
+                if error.raw_os_error() == Some(libc::ETXTBSY)
+                    && busy_retries < COMMAND_SPAWN_BUSY_RETRIES =>
+            {
+                busy_retries += 1;
+                thread::sleep(COMMAND_SPAWN_BUSY_BACKOFF);
+            }
+            Err(error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("failed to start machine-provider command: {error}"),
+                ));
+            }
+        }
+    };
     let stdin = child
         .stdin
         .take()
@@ -798,6 +816,24 @@ mod tests {
         }
     }
 
+    fn process_is_running(pid: libc::pid_t) -> bool {
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            return false;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
+                Ok(stat) => stat,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return false,
+                Err(_) => return true,
+            };
+            if let Some((_, fields)) = stat.rsplit_once(") ") {
+                return !fields.starts_with('Z');
+            }
+        }
+        true
+    }
+
     #[test]
     fn command_connector_executes_literal_argv_without_a_shell_or_token_leak() {
         let directory = TestDirectory::new();
@@ -930,7 +966,7 @@ mod tests {
             .expect("read descendant pid")
             .parse::<i32>()
             .expect("parse descendant pid");
-        assert_eq!(unsafe { libc::kill(descendant, 0) }, 0, "provider descendant must be alive");
+        assert!(process_is_running(descendant), "provider descendant must be alive");
 
         let (finished_tx, finished_rx) = mpsc::sync_channel(1);
         let cleanup = thread::spawn(move || {
@@ -948,7 +984,7 @@ mod tests {
 
         assert!(completed, "provider cleanup blocked on a descendant-owned diagnostic pipe");
         let deadline = Instant::now() + Duration::from_secs(5);
-        while unsafe { libc::kill(descendant, 0) } == 0 {
+        while process_is_running(descendant) {
             assert!(Instant::now() < deadline, "provider descendant {descendant} survived cleanup");
             thread::sleep(Duration::from_millis(10));
         }
@@ -1206,6 +1242,29 @@ mod tests {
         assert!(SshProviderConnector::cloud("-oProxyCommand=bad", None, None, None).is_err());
         assert!(SshProviderConnector::cloud("cmux.cloud", Some("bad user"), None, None).is_err());
         assert!(SshProviderConnector::cloud("cmux.cloud", None, Some(0), None).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn command_connector_retries_a_transient_busy_executable() {
+        let directory = TestDirectory::new();
+        let script = directory.script("transiently-busy", "while IFS= read -r _line; do :; done");
+        let writer = fs::OpenOptions::new()
+            .write(true)
+            .open(&script)
+            .expect("hold provider executable open for writing");
+        let connector =
+            CommandProviderConnector::new([script.into_os_string()]).expect("create connector");
+        let release = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(25));
+            drop(writer);
+        });
+
+        let connection = connector.connect();
+        release.join().expect("release provider executable");
+        let (_, control, _) =
+            connection.expect("retry provider executable after it becomes idle").into_parts();
+        drop(control);
     }
 
     #[test]

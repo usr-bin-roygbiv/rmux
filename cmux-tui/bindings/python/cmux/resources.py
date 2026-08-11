@@ -147,6 +147,7 @@ from .models import (
     WorkspaceSnapshot,
 )
 from .options import (
+    _UNSET as _OPTION_UNSET,
     AgentReportOptions,
     BrowserAttachOptions,
     BrowserMouseOptions,
@@ -223,7 +224,9 @@ def _options(value: object) -> Dict[str, Any]:
     result: Dict[str, Any] = {}
     for item in fields(value):
         field_value = getattr(value, item.name)
-        if field_value is None:
+        if field_value is _OPTION_UNSET:
+            continue
+        if field_value is None and not item.metadata.get("encode_none"):
             continue
         name = {
             "columns": "cols",
@@ -1004,6 +1007,7 @@ def _aux_snapshot(
             "session_id",
             "title",
             "body",
+            "subtitle",
             "level",
             "terminal_id",
             "created_at_ms",
@@ -1016,6 +1020,14 @@ def _aux_snapshot(
             "source",
             "updated_at_ms",
             "source_session",
+            "root_session",
+            "label",
+            "detail",
+            "started_at_ms",
+            "tasks_completed",
+            "tasks_total",
+            "jobs_running",
+            "agents_active",
         ),
         SidebarViewSnapshot: (
             "session_id",
@@ -1062,6 +1074,7 @@ def _aux_snapshot(
     elif snapshot_type is NotificationSnapshot:
         arguments.update(
             title=_required_string(payload, "title"),
+            subtitle=_required_nullable_string(payload, "subtitle"),
             body=_required_string(payload, "body"),
             level=_required_enum(
                 payload,
@@ -1080,7 +1093,7 @@ def _aux_snapshot(
             state=_required_enum(
                 payload,
                 "state",
-                ("working", "blocked", "idle", "done", "unknown"),
+                ("working", "blocked", "idle", "done", "error", "unknown"),
             ),
             source=_required_enum(
                 payload,
@@ -1092,6 +1105,20 @@ def _aux_snapshot(
                 payload,
                 "source_session",
             ),
+            root_session=_required_bool(payload, "root_session"),
+            label=_required_nullable_string(payload, "label"),
+            detail=_required_nullable_string(payload, "detail"),
+            started_at_ms=_required_nullable_decimal_int(
+                payload,
+                "started_at_ms",
+            ),
+            tasks_completed=_required_nullable_decimal_int(
+                payload,
+                "tasks_completed",
+            ),
+            tasks_total=_required_nullable_decimal_int(payload, "tasks_total"),
+            jobs_running=_required_nullable_decimal_int(payload, "jobs_running"),
+            agents_active=_required_nullable_decimal_int(payload, "agents_active"),
         )
     elif snapshot_type is SidebarViewSnapshot:
         arguments.update(
@@ -3250,9 +3277,20 @@ class Session(_Handle[SessionId, SessionSnapshot]):
         expected_revision: Optional[str] = None,
     ) -> MutationResult["Agent"]:
         scope = {**self._scope, "session": self.selector.encode()}
+        params = {**scope, **_options(options)}
+        for name in (
+            "started_at_ms",
+            "tasks_completed",
+            "tasks_total",
+            "jobs_running",
+            "agents_active",
+        ):
+            value = getattr(options, name)
+            if value is not None:
+                params[name] = _decimal_param(value, name)
         return self._client._mutation_handle(
             Operations.AGENT_REPORT,
-            {**scope, **_options(options)},
+            params,
             idempotency_key,
             expected_revision,
             lambda value: _aux_snapshot(

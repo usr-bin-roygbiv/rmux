@@ -1980,6 +1980,239 @@ test("send serializes base64 input and the protocol v7 paste flag", async () => 
   await client.close();
 });
 
+test("protocol 12 helpers serialize notification subtitles and agent telemetry", async () => {
+  const transport = new ScriptedTransport((request, connection) => {
+    if (request.cmd === "identify") {
+      connection.emit({
+        id: request.id,
+        ok: true,
+        data: { app: "cmux-tui", version: "0.1.2", protocol: 12, session: "main", pid: 1 },
+      });
+      return;
+    }
+    if (request.cmd === "notify") {
+      assert.deepEqual(request, {
+        id: 2,
+        cmd: "notify",
+        title: "Agent",
+        body: "ready",
+        subtitle: "Completed",
+        level: "info",
+        surface: 41,
+      });
+      connection.emit({ id: request.id, ok: true, data: { notification: 9 } });
+      return;
+    }
+    assert.deepEqual(request, {
+      id: 3,
+      cmd: "report-agent",
+      surface: 41,
+      state: "error",
+      source: "socket",
+      root_session: true,
+      session: "session-1",
+      label: "root",
+      detail: "reviewing",
+      started_at_ms: 1_700_000_000_000,
+      tasks_completed: 3,
+      tasks_total: 5,
+      jobs_running: 2,
+      agents_active: 4,
+    });
+    connection.emit({ id: request.id, ok: true, data: { ...request, updated_at_ms: 1_700_000_001_000 } });
+  });
+  const client = new CmuxClient({ transport });
+
+  await client.notify("Agent", "ready", {
+    subtitle: "Completed",
+    level: "info",
+    surface: 41n,
+  });
+  await client.reportAgent(41n, "error", "socket", {
+    session: "session-1",
+    root_session: true,
+    label: "root",
+    detail: "reviewing",
+    started_at_ms: 1_700_000_000_000n,
+    tasks_completed: 3n,
+    tasks_total: 5n,
+    jobs_running: 2n,
+    agents_active: 4n,
+  });
+  await client.close();
+});
+
+test("reportAgent preserves legacy session calls and gates only protocol 12 telemetry", async () => {
+  const reports: unknown[] = [];
+  const transport = new ScriptedTransport((request, connection) => {
+    if (request.cmd === "identify") {
+      connection.emit({
+        id: request.id,
+        ok: true,
+        data: { app: "cmux-tui", version: "0.1.2", protocol: 11, session: "main", pid: 1 },
+      });
+      return;
+    }
+    reports.push(request);
+    connection.emit({ id: request.id, ok: true, data: { ...request, updated_at_ms: 1 } });
+  });
+  const client = new CmuxClient({ transport });
+
+  await client.reportAgent(41n, "working", "socket", "legacy-session");
+  await client.reportAgent(42n, "idle", "socket", { session: "object-session" });
+  await assert.rejects(
+    client.reportAgent(43n, "working", "socket", { detail: "reviewing" }),
+    /agent telemetry requires protocol 12/,
+  );
+
+  assert.deepEqual(reports, [
+    { id: 2, cmd: "report-agent", surface: 41, state: "working", source: "socket", session: "legacy-session" },
+    { id: 3, cmd: "report-agent", surface: 42, state: "idle", source: "socket", session: "object-session" },
+  ]);
+  await client.close();
+});
+
+test("protocol 12 helpers serialize notification subtitles and agent telemetry", async () => {
+  const transport = new ScriptedTransport((request, connection) => {
+    if (request.cmd === "identify") {
+      connection.emit({
+        id: request.id,
+        ok: true,
+        data: { app: "cmux-tui", version: "0.1.2", protocol: 12, session: "main", pid: 1 },
+      });
+      return;
+    }
+    if (request.cmd === "notify") {
+      assert.deepEqual(request, {
+        id: 2,
+        cmd: "notify",
+        title: "Agent",
+        body: "ready",
+        subtitle: "Completed",
+        level: "info",
+        surface: 41,
+      });
+      connection.emit({ id: request.id, ok: true, data: { notification: 9 } });
+      return;
+    }
+    assert.deepEqual(request, {
+      id: 3,
+      cmd: "report-agent",
+      surface: 41,
+      state: "error",
+      source: "socket",
+      root_session: true,
+      session: "session-1",
+      label: "root",
+      detail: "reviewing",
+      started_at_ms: 1_700_000_000_000,
+      tasks_completed: 3,
+      tasks_total: 5,
+      jobs_running: 2,
+      agents_active: 4,
+    });
+    connection.emit({ id: request.id, ok: true, data: { ...request, updated_at_ms: 1_700_000_001_000 } });
+  });
+  const client = new CmuxClient({ transport });
+
+  await client.notify("Agent", "ready", {
+    subtitle: "Completed",
+    level: "info",
+    surface: 41n,
+  });
+  await client.reportAgent(41n, "error", "socket", {
+    session: "session-1",
+    root_session: true,
+    label: "root",
+    detail: "reviewing",
+    started_at_ms: 1_700_000_000_000n,
+    tasks_completed: 3n,
+    tasks_total: 5n,
+    jobs_running: 2n,
+    agents_active: 4n,
+  });
+  await client.close();
+});
+
+test("reportAgent preserves legacy session calls and gates only protocol 12 telemetry", async () => {
+  const reports: unknown[] = [];
+  const transport = new ScriptedTransport((request, connection) => {
+    if (request.cmd === "identify") {
+      connection.emit({
+        id: request.id,
+        ok: true,
+        data: { app: "cmux-tui", version: "0.1.2", protocol: 11, session: "main", pid: 1 },
+      });
+      return;
+    }
+    reports.push(request);
+    connection.emit({ id: request.id, ok: true, data: { ...request, updated_at_ms: 1 } });
+  });
+  const client = new CmuxClient({ transport });
+
+  await client.reportAgent(41n, "working", "socket", "legacy-session");
+  await client.reportAgent(42n, "idle", "socket", { session: "object-session" });
+  await assert.rejects(
+    client.reportAgent(43n, "working", "socket", { detail: "reviewing" }),
+    /agent telemetry requires protocol 12/,
+  );
+  await assert.rejects(
+    client.reportAgent(44n, "error", "socket", "legacy-session"),
+    /agent error state requires protocol 12/,
+  );
+  await assert.rejects(
+    client.listAgents({ state: "error" }),
+    /agent error state requires protocol 12/,
+  );
+
+  assert.deepEqual(reports, [
+    { id: 2, cmd: "report-agent", surface: 41, state: "working", source: "socket", session: "legacy-session" },
+    { id: 3, cmd: "report-agent", surface: 42, state: "idle", source: "socket", session: "object-session" },
+  ]);
+  await client.close();
+});
+
+test("agent helpers preserve legacy root_session absence", async () => {
+  const transport = new ScriptedTransport((request, connection) => {
+    if (request.cmd === "identify") {
+      connection.emit({
+        id: request.id,
+        ok: true,
+        data: { app: "cmux-tui", version: "0.1.2", protocol: 12, session: "main", pid: 1 },
+      });
+      return;
+    }
+    const record = {
+      surface: 41,
+      state: "working",
+      source: "socket",
+      session: "legacy-session",
+      updated_at_ms: 1,
+    };
+    connection.emit({
+      id: request.id,
+      ok: true,
+      data: request.cmd === "list-agents" ? { agents: [record] } : record,
+    });
+  });
+  const client = new CmuxClient({ transport });
+
+  const listed = await client.listAgents();
+  const reported = await client.reportAgent(41n, "working", "socket", "legacy-session");
+  const genericListed = await client.request("list-agents", {});
+  const genericReported = await client.request("report-agent", {
+    surface: 41n,
+    state: "working",
+    source: "socket",
+    session: "legacy-session",
+  });
+  assert.equal(listed.agents[0]?.root_session, undefined);
+  assert.equal(reported.root_session, undefined);
+  assert.equal(genericListed.agents[0]?.root_session, undefined);
+  assert.equal(genericReported.root_session, undefined);
+  await client.close();
+});
+
 test("protocol v7 commands preserve protocol v6 server failures as command errors", async () => {
   const transport = new ScriptedTransport((request, connection) => {
     connection.emit({

@@ -1,0 +1,8 @@
+**
+!cmux-tui/
+!cmux-tui/**
+!ghostty/
+!ghostty/**
+!scripts/
+!scripts/install-zig-ci.sh
+!scripts/ghostty-zig-version.sh

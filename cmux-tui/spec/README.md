@@ -1,7 +1,8 @@
 # cmux-tui programmability contracts
 
 cmux-tui has one stable public resource protocol and several explicitly
-separate internal or privileged protocols.
+separate internal or privileged protocols. The implemented private mux protocol
+is version 12, as defined by `cmux-tui-core/src/server.rs`.
 
 ## Public API
 

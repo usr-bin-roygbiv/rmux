@@ -36,7 +36,7 @@ permissions:
 jobs:
   validate-inputs:
     name: validate exact commit request
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - name: Validate dispatch inputs
@@ -82,7 +82,7 @@ jobs:
   web-frontend:
     needs: validate-inputs
     if: inputs.mode == 'full'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -121,7 +121,7 @@ jobs:
     name: valgrind-leak-check (${{ matrix.shard }})
     needs: validate-inputs
     if: inputs.mode == 'full'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     # Full behavior stays in the normal macOS and Linux suites. Valgrind owns
     # the bounded startup parsers and terminal replay state only.
     timeout-minutes: 40
@@ -305,7 +305,7 @@ jobs:
     name: valgrind-leak-check
     if: always() && inputs.mode == 'full'
     needs: valgrind-leak-check-shard
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 2
     steps:
       - name: Require every Valgrind shard
@@ -316,16 +316,12 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     needs: validate-inputs
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.os == 'macos' && (vars.MACOS_RUNNER_15 || 'macos-15') || (vars.LINUX_RUNNER || 'ubuntu-latest') }}
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: macos
-            runner: blacksmith-6vcpu-macos-15
-          - os: linux
-            runner: blacksmith-4vcpu-ubuntu-2404
+        os: [macos, linux]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -464,7 +460,7 @@ jobs:
   bindings-e2e:
     needs: validate-inputs
     if: inputs.mode == 'full'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -563,8 +559,8 @@ jobs:
       target_set: ${{ inputs.mode == 'full' && 'all' || 'macos-arm64' }}
       build_cloudflare_relay: false
       verify_linux_arm64: ${{ inputs.mode == 'full' }}
-      macos_runner: blacksmith-6vcpu-macos-15
-      linux_runner: blacksmith-4vcpu-ubuntu-2404
+      macos_runner: ${{ vars.MACOS_RUNNER_15 || 'macos-15' }}
+      linux_runner: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
       windows_runner: windows-latest
       checkout_ref: ${{ inputs.commit }}
 
@@ -578,7 +574,7 @@ jobs:
       - test
       - bindings-e2e
       - build-artifacts
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     env:
       MODE: ${{ inputs.mode }}

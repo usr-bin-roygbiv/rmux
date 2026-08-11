@@ -47,6 +47,7 @@ pub(super) fn restore_public_projections(
         notification_ledger.push_back(ResourceNotification {
             id: notification.id,
             title: notification.title,
+            subtitle: notification.subtitle,
             body: notification.body,
             level,
             terminal_id: notification.terminal_id,
@@ -66,6 +67,16 @@ pub(super) fn restore_public_projections(
                 state: agent_state(&agent.state)?,
                 source: agent_source(&agent.source)?,
                 session: agent.source_session,
+                telemetry: AgentTelemetry {
+                    root_session: agent.root_session,
+                    label: agent.label,
+                    detail: agent.detail,
+                    started_at_ms: agent.started_at_ms,
+                    tasks_completed: agent.tasks_completed,
+                    tasks_total: agent.tasks_total,
+                    jobs_running: agent.jobs_running,
+                    agents_active: agent.agents_active,
+                },
                 updated_at_ms: agent.updated_at_ms,
             },
         );
@@ -101,6 +112,7 @@ fn agent_state(value: &str) -> anyhow::Result<AgentState> {
         "blocked" => Ok(AgentState::Blocked),
         "idle" => Ok(AgentState::Idle),
         "done" => Ok(AgentState::Done),
+        "error" => Ok(AgentState::Error),
         "unknown" => Ok(AgentState::Unknown),
         other => anyhow::bail!("invalid durable agent state {other:?}"),
     }
@@ -163,6 +175,7 @@ mod tests {
                 id: NotificationPublicId::parse("notification_00000000000000000000000000000001")
                     .unwrap(),
                 title: "build".into(),
+                subtitle: None,
                 body: String::new(),
                 level: "info".into(),
                 terminal_id: Some(terminal.clone()),
@@ -176,6 +189,14 @@ mod tests {
                 source: "hook".into(),
                 updated_at_ms: 1,
                 source_session: None,
+                root_session: false,
+                label: None,
+                detail: None,
+                started_at_ms: None,
+                tasks_completed: None,
+                tasks_total: None,
+                jobs_running: None,
+                agents_active: None,
             }],
             terminal_defaults: None,
             frontend_projections: Vec::new(),
@@ -199,6 +220,7 @@ mod tests {
                 id: NotificationPublicId::parse("notification_00000000000000000000000000000002")
                     .unwrap(),
                 title: "orphan".into(),
+                subtitle: None,
                 body: String::new(),
                 level: "warning".into(),
                 terminal_id: None,
@@ -221,6 +243,7 @@ mod tests {
             notifications: vec![RegistryNotificationProjection {
                 id: NotificationPublicId::parse("notification_00000000000000000000000000000003")
                     .unwrap(),
+                subtitle: None,
                 title: "finished".into(),
                 body: String::new(),
                 level: "info".into(),

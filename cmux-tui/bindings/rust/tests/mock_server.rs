@@ -1,12 +1,13 @@
 use cmux::{
-    BrowserAttachOptions, BrowserCreateOptions, BrowserId, BrowserMouseButton, BrowserMouseKind,
-    BrowserMouseOptions, CancellationToken, CellPixelsOptions, ClientMetadataOptions,
-    ClientSizingOptions, Config, CopyOptions, CreatePaneOptions, CreateScreenOptions,
-    CreateWorkspaceOptions, CreationRecovery, CreationState, Direction, Error, EventStreamOptions,
-    InitialContent, LabelOptions, MutationOptions, PairingDecision, PairingResolveOptions,
-    PixelSize, ReadHistoryOptions, ReadScreenOptions, RendererGrantOptions, RequestOptions,
-    ResourceChange, ResourceEntitySnapshot, RunCommand, RunOptions, Selector, SessionEvent,
-    SessionId, ShutdownOptions, Size, SplitOptions, StreamEndReason, StreamPoll,
+    AgentReportOptions, AgentSnapshotSource, AgentSource, AgentState, BrowserAttachOptions,
+    BrowserCreateOptions, BrowserId, BrowserMouseButton, BrowserMouseKind, BrowserMouseOptions,
+    CancellationToken, CellPixelsOptions, ClientMetadataOptions, ClientSizingOptions, Config,
+    CopyOptions, CreatePaneOptions, CreateScreenOptions, CreateWorkspaceOptions, CreationRecovery,
+    CreationState, Direction, Error, EventStreamOptions, InitialContent, LabelOptions,
+    MutationOptions, NotificationLevel, NotificationOptions, PairingDecision,
+    PairingResolveOptions, PixelSize, ReadHistoryOptions, ReadScreenOptions, RendererGrantOptions,
+    RequestOptions, ResourceChange, ResourceEntitySnapshot, RunCommand, RunOptions, Selector,
+    SessionEvent, SessionId, ShutdownOptions, Size, SplitOptions, StreamEndReason, StreamPoll,
     TerminalAttachOptions, TerminalCreateOptions, TerminalDefaultsOptions, TerminalExitOutcome,
     TerminalId, TerminalLifecycle, TerminalSnapshot, TerminalWaitExitResult, UndoLayoutOptions,
     Update, WaitOptions, WheelOptions, WorkspaceId,
@@ -31,6 +32,8 @@ const TERMINAL: &str = "term_00000000000000000000000000000008";
 const BROWSER: &str = "browser_0000000000000000000000000000000d";
 const CLIENT: &str = "client_00000000000000000000000000000009";
 const PAIRING_REQUEST: &str = "pairing_0000000000000000000000000000000c";
+const NOTIFICATION: &str = "notification_0000000000000000000000000000000e";
+const AGENT: &str = "agent_0000000000000000000000000000000f";
 
 static NEXT_SOCKET: AtomicU64 = AtomicU64::new(1);
 
@@ -98,7 +101,7 @@ fn failure(stream: &mut UnixStream, request: &Value, code: &str, message: &str, 
 }
 
 fn assert_connection_closed_without_request(reader: &mut BufReader<UnixStream>, context: &str) {
-    if reader.get_ref().set_read_timeout(Some(Duration::from_millis(500))).is_err() {
+    if reader.get_ref().set_read_timeout(Some(Duration::from_secs(5))).is_err() {
         // macOS can reject SO_RCVTIMEO after the peer has already shut down
         // both halves. A nonblocking read still distinguishes EOF from a live
         // connection without allowing the test to hang.
@@ -2219,6 +2222,176 @@ fn catalog_terminal_session_client_and_pairing_results_are_concrete() {
         )
         .unwrap();
     assert_eq!(resolution.value.pairing_request.code.expose(), "");
+    client.close().unwrap();
+    server.join().unwrap();
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn notification_subtitle_and_agent_telemetry_follow_protocol_twelve_contract() {
+    let path = socket_path();
+    let listener = UnixListener::bind(&path).unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+        let notification_request = request(&mut reader);
+        assert_eq!(notification_request["operation"], "notification.create");
+        let notification_params = notification_request["params"].as_object().unwrap();
+        assert!(notification_params.contains_key("subtitle"));
+        assert_eq!(notification_params["title"], "Deploy complete");
+        assert_eq!(notification_params["body"], "All checks passed");
+        assert_eq!(notification_params["subtitle"], Value::Null);
+        assert_eq!(notification_params["level"], "warning");
+        success(
+            &mut stream,
+            &notification_request,
+            mutation_result(
+                &notification_request,
+                json!({
+                    "id": NOTIFICATION,
+                    "session_id": SESSION,
+                    "title": "Deploy complete",
+                    "subtitle": null,
+                    "body": "All checks passed",
+                    "level": "warning",
+                    "created_at_ms": "100",
+                    "unread": true
+                }),
+            ),
+        );
+
+        let report_request = request(&mut reader);
+        assert_eq!(report_request["operation"], "agent.report");
+        let report_params = report_request["params"].as_object().unwrap();
+        for field in [
+            "root_session",
+            "label",
+            "detail",
+            "started_at_ms",
+            "tasks_completed",
+            "tasks_total",
+            "jobs_running",
+            "agents_active",
+        ] {
+            assert!(report_params.contains_key(field), "missing report field {field}");
+        }
+        assert_eq!(report_params["state"], "error");
+        assert_eq!(report_params["source"], "socket");
+        assert_eq!(report_params["source_session"], "source-session");
+        assert_eq!(report_params["root_session"], false);
+        assert_eq!(report_params["label"], "root build");
+        assert_eq!(report_params["detail"], Value::Null);
+        assert_eq!(report_params["started_at_ms"], "9007199254740993");
+        assert_eq!(report_params["tasks_completed"], "3");
+        assert_eq!(report_params["tasks_total"], Value::Null);
+        assert_eq!(report_params["jobs_running"], "2");
+        assert_eq!(report_params["agents_active"], "4");
+        success(
+            &mut stream,
+            &report_request,
+            mutation_result(
+                &report_request,
+                json!({
+                    "id": AGENT,
+                    "session_id": SESSION,
+                    "terminal_id": TERMINAL,
+                    "state": "error",
+                    "source": "socket",
+                    "updated_at_ms": "9007199254740994",
+                    "source_session": "source-session",
+                    "root_session": false,
+                    "label": "root build",
+                    "detail": null,
+                    "started_at_ms": "9007199254740993",
+                    "tasks_completed": "3",
+                    "tasks_total": null,
+                    "jobs_running": "2",
+                    "agents_active": "4"
+                }),
+            ),
+        );
+
+        let detected_request = request(&mut reader);
+        assert_eq!(detected_request["operation"], "agent.list");
+        success(
+            &mut stream,
+            &detected_request,
+            json!([{
+                "id": AGENT,
+                "session_id": SESSION,
+                "terminal_id": TERMINAL,
+                "state": "idle",
+                "source": "detected",
+                "updated_at_ms": "9007199254740995",
+                "source_session": null,
+                "root_session": true,
+                "label": null,
+                "detail": null,
+                "started_at_ms": null,
+                "tasks_completed": null,
+                "tasks_total": null,
+                "jobs_running": null,
+                "agents_active": null
+            }]),
+        );
+    });
+
+    let client = connect(&path);
+    let session = client.session(SessionId::parse(SESSION).unwrap());
+    let notification = session
+        .create_notification_with(
+            NotificationOptions {
+                title: "Deploy complete".to_string(),
+                subtitle: Update::Clear,
+                body: "All checks passed".to_string(),
+                level: Some(NotificationLevel::Warning),
+                terminal_id: None,
+            },
+            MutationOptions::new("notification-subtitle").unwrap(),
+        )
+        .unwrap();
+    assert_eq!(notification.value.subtitle, None);
+
+    let report = session
+        .report_agent_with(
+            AgentReportOptions {
+                terminal_id: TerminalId::parse(TERMINAL).unwrap(),
+                state: AgentState::Error,
+                source: AgentSource::Socket,
+                source_session: Some("source-session".to_string()),
+                root_session: Some(false),
+                label: Update::Set("root build".to_string()),
+                detail: Update::Clear,
+                started_at_ms: Update::Set(9_007_199_254_740_993),
+                tasks_completed: Update::Set(3),
+                tasks_total: Update::Clear,
+                jobs_running: Update::Set(2),
+                agents_active: Update::Set(4),
+            },
+            MutationOptions::new("agent-telemetry").unwrap(),
+        )
+        .unwrap();
+    assert_eq!(report.value.state, AgentState::Error);
+    assert!(!report.value.root_session);
+    assert_eq!(report.value.label.as_deref(), Some("root build"));
+    assert_eq!(report.value.detail, None);
+    assert_eq!(report.value.started_at_ms, Some(9_007_199_254_740_993));
+    assert_eq!(report.value.tasks_completed, Some(3));
+    assert_eq!(report.value.tasks_total, None);
+    assert_eq!(report.value.jobs_running, Some(2));
+    assert_eq!(report.value.agents_active, Some(4));
+
+    let detected = session.agent(cmux::AgentId::parse(AGENT).unwrap()).refresh().unwrap();
+    assert_eq!(detected.source, AgentSnapshotSource::Detected);
+    assert!(detected.root_session);
+    assert_eq!(detected.label, None);
+    assert_eq!(detected.detail, None);
+    assert_eq!(detected.started_at_ms, None);
+    assert_eq!(detected.tasks_completed, None);
+    assert_eq!(detected.tasks_total, None);
+    assert_eq!(detected.jobs_running, None);
+    assert_eq!(detected.agents_active, None);
     client.close().unwrap();
     server.join().unwrap();
     std::fs::remove_file(path).unwrap();

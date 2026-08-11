@@ -140,10 +140,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use cmux_tui_core::BrowserMode;
 use cmux_tui_core::SidebarPluginOptions;
-use cmux_tui_core::SurfaceOptions;
 use cmux_tui_core::TRANSPORT_SAFE_CAPTURE_MEGAPIXELS;
 use cmux_tui_core::platform;
 use cmux_tui_core::{CursorShape, DefaultColors, Rgb};
+use cmux_tui_core::{DEFAULT_SCROLLBACK_LIMIT_BYTES, SurfaceOptions};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Color;
 use serde::{Deserialize, Deserializer};
@@ -2522,6 +2522,8 @@ fn parse_chord(s: &str) -> Option<Chord> {
     Some(Chord { code, mods })
 }
 
+const DEFAULT_ABNORMAL_COMMAND_EXIT_RUNTIME_MS: u64 = 250;
+
 /// Full resolved configuration.
 #[derive(Debug, Clone, Default)]
 pub struct Config {
@@ -2530,6 +2532,8 @@ pub struct Config {
     pub terminal_defaults: DefaultColors,
     pub cursor_style: Option<CursorShape>,
     pub cursor_blink: Option<bool>,
+    abnormal_command_exit_runtime_ms: Option<u64>,
+    scrollback_limit_bytes: Option<usize>,
     pub chrome: ChromeMode,
     pub tabs: Tabs,
     pub sidebar: Sidebar,
@@ -2559,6 +2563,14 @@ pub struct ThemeOverrides {
 }
 
 impl Config {
+    pub fn abnormal_command_exit_runtime_ms(&self) -> u64 {
+        self.abnormal_command_exit_runtime_ms.unwrap_or(DEFAULT_ABNORMAL_COMMAND_EXIT_RUNTIME_MS)
+    }
+
+    pub fn scrollback_limit_bytes(&self) -> usize {
+        self.scrollback_limit_bytes.unwrap_or(DEFAULT_SCROLLBACK_LIMIT_BYTES)
+    }
+
     pub fn apply_chrome_defaults(&mut self, chrome: ChromeTheme) {
         if !self.theme_overrides.selection {
             self.theme.selection_bg = chrome.selection_bg;
@@ -2578,8 +2590,11 @@ pub struct SidebarPluginConfig {
 pub fn load() -> Config {
     let mut config = Config::default();
 
-    let defaults = ghostty_defaults();
+    let ghostty = ghostty_defaults();
+    let defaults = ghostty.colors;
     config.terminal_defaults = defaults;
+    config.abnormal_command_exit_runtime_ms = ghostty.abnormal_command_exit_runtime_ms;
+    config.scrollback_limit_bytes = ghostty.scrollback_limit_bytes;
     if let Some(bg) = defaults.selection_bg {
         config.theme.selection_bg = Color::Rgb(bg.r, bg.g, bg.b);
         config.theme_overrides.selection = true;
@@ -3151,14 +3166,49 @@ fn parse_color(s: &str) -> Option<Color> {
 
 /// The user's relevant Ghostty settings with non-optional application defaults
 /// resolved for values that the low-level terminal otherwise leaves unset.
-fn ghostty_defaults() -> DefaultColors {
+fn ghostty_defaults() -> GhosttyApplicationDefaults {
     let config_paths = platform::ghostty_config_paths();
     let theme_dirs = platform::ghostty_theme_dirs();
     #[cfg(not(test))]
     let helper_defaults = ghostty_defaults_from_helper();
     #[cfg(test)]
     let helper_defaults = GhosttyHelperDefaults::Unavailable;
-    ghostty_defaults_from_sources(config_paths, theme_dirs, helper_defaults)
+    ghostty_application_defaults_from_sources(config_paths, theme_dirs, helper_defaults)
+}
+
+fn ghostty_application_defaults_from_sources(
+    config_paths: Vec<PathBuf>,
+    theme_dirs: Vec<PathBuf>,
+    helper_defaults: GhosttyHelperDefaults,
+) -> GhosttyApplicationDefaults {
+    let parsed = ghostty_file_defaults(&config_paths).unwrap_or_default();
+    let colors = ghostty_defaults_from_sources(config_paths, theme_dirs, helper_defaults);
+    GhosttyApplicationDefaults { colors, ..parsed }
+}
+
+fn ghostty_file_defaults(config_paths: &[PathBuf]) -> Option<GhosttyApplicationDefaults> {
+    let text = config_paths.iter().find_map(|path| std::fs::read_to_string(path).ok())?;
+    Some(GhosttyApplicationDefaults {
+        colors: parse_ghostty_defaults(&text),
+        abnormal_command_exit_runtime_ms: parse_abnormal_command_exit_runtime_ms(&text),
+        scrollback_limit_bytes: parse_scrollback_limit_bytes(&text),
+    })
+}
+
+fn resolve_ghostty_application_defaults(mut defaults: DefaultColors) -> DefaultColors {
+    defaults.cursor_style.get_or_insert(CursorShape::Block);
+    // `cursor-style-blink = null` is semantically different from `true` in
+    // Ghostty: both start blinking, but only the unset form lets DEC mode 12
+    // control the live cursor. Keep that absence intact for the terminal
+    // application boundary to resolve without losing its provenance.
+    defaults
+}
+
+#[derive(Default)]
+struct GhosttyApplicationDefaults {
+    colors: DefaultColors,
+    abnormal_command_exit_runtime_ms: Option<u64>,
+    scrollback_limit_bytes: Option<usize>,
 }
 
 enum GhosttyHelperDefaults {
@@ -3182,36 +3232,66 @@ fn ghostty_defaults_from_sources(
     resolve_ghostty_application_defaults(parsed)
 }
 
-fn resolve_ghostty_application_defaults(mut defaults: DefaultColors) -> DefaultColors {
-    defaults.cursor_style.get_or_insert(CursorShape::Block);
-    // `cursor-style-blink = null` is semantically different from `true` in
-    // Ghostty: both start blinking, but only the unset form lets DEC mode 12
-    // control the live cursor. Keep that absence intact for the terminal
-    // application boundary to resolve without losing its provenance.
-    defaults
-}
-
 #[cfg(test)]
 fn resolved_ghostty_defaults_from_with(
     installations: &[platform::GhosttyInstallation],
-    mut resolve: impl FnMut(&platform::GhosttyInstallation) -> Option<String>,
-) -> Option<DefaultColors> {
+    mut resolve: impl FnMut(&platform::GhosttyInstallation, bool) -> Option<String>,
+) -> Option<GhosttyApplicationDefaults> {
     installations.iter().find_map(|installation| {
-        let text = resolve(installation)?;
-        let defaults = parse_resolved_ghostty_defaults(&text);
-        // `+show-config` serializes Ghostty's effective application defaults,
-        // including both colors. An executable that exits successfully but
-        // emits no resolved config (for example a packaging stub) is not a
-        // usable resolver and must not suppress later pinned candidates.
-        (defaults.fg.is_some() && defaults.bg.is_some()).then_some(defaults)
+        let text = resolve(installation, false)?;
+        let colors = parse_resolved_ghostty_defaults(&text);
+        // `+show-config` serializes Ghostty's effective application settings.
+        // An executable that exits successfully but emits no resolved config
+        // (for example a packaging stub) is not a usable resolver and must
+        // not suppress later pinned candidates.
+        (colors.fg.is_some() && colors.bg.is_some()).then(|| {
+            let scrollback_limit_bytes = parse_scrollback_limit_bytes(&text).or_else(|| {
+                resolve(installation, true).as_deref().and_then(parse_scrollback_limit_bytes)
+            });
+            GhosttyApplicationDefaults {
+                colors,
+                abnormal_command_exit_runtime_ms: parse_abnormal_command_exit_runtime_ms(&text),
+                scrollback_limit_bytes,
+            }
+        })
     })
 }
 
-#[cfg(all(test, unix))]
-fn ghostty_show_config_command(installation: &platform::GhosttyInstallation) -> Command {
+fn parse_scrollback_limit_bytes(text: &str) -> Option<usize> {
+    text.lines()
+        .filter_map(|line| {
+            let (key, value) = line.trim().split_once('=')?;
+            (key.trim() == "scrollback-limit")
+                .then(|| value.trim().trim_matches('"').replace('_', "").parse::<usize>().ok())
+                .flatten()
+        })
+        .next_back()
+}
+
+fn parse_abnormal_command_exit_runtime_ms(text: &str) -> Option<u64> {
+    text.lines()
+        .filter_map(|line| {
+            let (key, value) = line.trim().split_once('=')?;
+            (key.trim() == "abnormal-command-exit-runtime")
+                .then(|| value.trim().trim_matches('"').parse::<u32>().ok())
+                .flatten()
+                .map(u64::from)
+        })
+        .next_back()
+}
+
+#[cfg(test)]
+fn ghostty_show_config_command(
+    installation: &platform::GhosttyInstallation,
+    show_defaults: bool,
+) -> Command {
     let mut command = Command::new(&installation.binary);
+    command.arg("+show-config");
+    if show_defaults {
+        command.arg("--default");
+    }
     command
-        .args(["+show-config", "--no-pager"])
+        .arg("--no-pager")
         .env_remove("GHOSTTY_RESOURCES_DIR")
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -3219,17 +3299,6 @@ fn ghostty_show_config_command(installation: &platform::GhosttyInstallation) -> 
         command.env("GHOSTTY_RESOURCES_DIR", resources_dir);
     }
     command
-}
-
-/// Parse the subset of Ghostty's `key = value` config used by cmux-tui.
-///
-/// When the Ghostty executable is unavailable, a theme is only accepted if
-/// its file can be read. This preserves Ghostty's fail-soft behavior: keep
-/// looking after unreadable theme entries, then stop after the first theme
-/// that resolves successfully.
-#[cfg(test)]
-pub(crate) fn parse_ghostty_defaults(text: &str) -> DefaultColors {
-    parse_ghostty_defaults_with_theme_dirs(text, &platform::ghostty_theme_dirs())
 }
 
 pub(crate) fn is_ghostty_config_helper_invocation(args: &[String]) -> bool {
@@ -3532,7 +3601,10 @@ fn parse_ghostty_defaults_from_paths_result_until(
     GhosttyConfigParseOutcome::Missing
 }
 
-#[cfg(test)]
+pub(crate) fn parse_ghostty_defaults(text: &str) -> DefaultColors {
+    parse_ghostty_defaults_with_theme_dirs(text, &platform::ghostty_theme_dirs())
+}
+
 fn parse_ghostty_defaults_with_theme_dirs(text: &str, theme_dirs: &[PathBuf]) -> DefaultColors {
     let mut theme_candidates = Vec::new();
     let parsed = parse_ghostty_config_text(text, None, &mut theme_candidates);
@@ -4490,6 +4562,32 @@ mod tests {
         assert!(defaults.palette[2..15].iter().all(Option::is_none));
         assert!(defaults.palette[16..].iter().all(Option::is_none));
     }
+    #[test]
+    fn parses_ghostty_abnormal_exit_runtime_with_later_valid_entry_wins() {
+        assert_eq!(
+            parse_abnormal_command_exit_runtime_ms(
+                "abnormal-command-exit-runtime = 100\n\
+                 abnormal-command-exit-runtime = invalid\n\
+                 abnormal-command-exit-runtime = 375\n"
+            ),
+            Some(375)
+        );
+        assert_eq!(parse_abnormal_command_exit_runtime_ms(""), None);
+    }
+
+    #[test]
+    fn parses_ghostty_scrollback_limit_with_later_valid_entry_wins() {
+        assert_eq!(
+            parse_scrollback_limit_bytes(
+                "scrollback-limit = 4_000_000\n\
+                 scrollback-limit = invalid\n\
+                 scrollback-limit = 50_000_000\n"
+            ),
+            Some(50_000_000)
+        );
+        assert_eq!(parse_scrollback_limit_bytes("scrollback-limit = -1\n"), None);
+        assert_eq!(Config::default().scrollback_limit_bytes(), DEFAULT_SCROLLBACK_LIMIT_BYTES);
+    }
 
     #[test]
     fn parses_resolved_ghostty_show_config_output() {
@@ -4542,10 +4640,10 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
 
-        let output = ghostty_show_config_command(&platform::GhosttyInstallation {
-            binary,
-            resources_dir: Some(resources.clone()),
-        })
+        let output = ghostty_show_config_command(
+            &platform::GhosttyInstallation { binary, resources_dir: Some(resources.clone()) },
+            false,
+        )
         .output()
         .unwrap();
         assert!(output.status.success());
@@ -4603,19 +4701,57 @@ mod tests {
             platform::GhosttyInstallation { binary: working.clone(), resources_dir: None },
         ];
         let mut visited = Vec::new();
-        let defaults = resolved_ghostty_defaults_from_with(&installations, |installation| {
-            visited.push(installation.binary.clone());
-            if installation.binary == broken {
-                Some(String::new())
-            } else {
-                Some("background = #272822\nforeground = #fdfff1\n".to_owned())
-            }
-        })
-        .unwrap();
+        let defaults =
+            resolved_ghostty_defaults_from_with(&installations, |installation, show_defaults| {
+                visited.push((installation.binary.clone(), show_defaults));
+                if installation.binary == broken {
+                    Some(String::new())
+                } else if show_defaults {
+                    Some("scrollback-limit = 4000000\n".to_owned())
+                } else {
+                    Some(
+                        "background = #272822\nforeground = #fdfff1\n\
+                         abnormal-command-exit-runtime = 375\n"
+                            .to_owned(),
+                    )
+                }
+            })
+            .unwrap();
 
-        assert_eq!(visited, vec![broken, working]);
-        assert_eq!(defaults.bg, Some(Rgb { r: 0x27, g: 0x28, b: 0x22 }));
-        assert_eq!(defaults.fg, Some(Rgb { r: 0xfd, g: 0xff, b: 0xf1 }));
+        assert_eq!(visited, vec![(broken, false), (working.clone(), false), (working, true)]);
+        assert_eq!(defaults.colors.bg, Some(Rgb { r: 0x27, g: 0x28, b: 0x22 }));
+        assert_eq!(defaults.colors.fg, Some(Rgb { r: 0xfd, g: 0xff, b: 0xf1 }));
+        assert_eq!(defaults.abnormal_command_exit_runtime_ms, Some(375));
+        assert_eq!(defaults.scrollback_limit_bytes, Some(4_000_000));
+    }
+
+    #[test]
+    fn helper_colors_preserve_file_configured_runtime_defaults() {
+        let root = std::env::temp_dir().join(format!(
+            "cmux-tui-ghostty-runtime-fallback-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let config_path = root.join("config");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            &config_path,
+            "background = #010203\nforeground = #040506\nscrollback-limit = 8_000_000\nabnormal-command-exit-runtime = 900\n",
+        )
+        .unwrap();
+        let helper_defaults =
+            GhosttyHelperDefaults::Resolved(Box::new(parse_resolved_ghostty_defaults(
+                "background = #272822\nforeground = #fdfff1\nabnormal-command-exit-runtime = 300\n",
+            )));
+
+        let defaults =
+            ghostty_application_defaults_from_sources(vec![config_path], vec![], helper_defaults);
+
+        let _ = std::fs::remove_dir_all(root);
+        assert_eq!(defaults.scrollback_limit_bytes, Some(8_000_000));
+        assert_eq!(defaults.colors.bg, Some(Rgb { r: 0x27, g: 0x28, b: 0x22 }));
+        assert_eq!(defaults.colors.fg, Some(Rgb { r: 0xfd, g: 0xff, b: 0xf1 }));
+        assert_eq!(defaults.abnormal_command_exit_runtime_ms, Some(900));
     }
 
     #[test]
@@ -7096,6 +7232,21 @@ mod tests {
     }
 
     #[test]
+    fn browser_tab_action_accepts_canonical_and_snake_case_keys() {
+        for name in ["new-browser-tab", "new_browser_tab"] {
+            let mut keys = Keys::default();
+            let mut raw = HashMap::new();
+            raw.insert(name.to_string(), Value::String("f".to_string()));
+            keys.apply(&raw);
+            assert_eq!(
+                keys.action_for(&KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE)),
+                Some(Action::NewBrowserTab),
+                "{name} did not bind the browser tab action"
+            );
+        }
+    }
+
+    #[test]
     fn select_screen_action_names_round_trip_and_parse() {
         for number in 0..=9 {
             let action = Action::select_screen(number).unwrap();
@@ -7359,5 +7510,46 @@ mod tests {
         assert!(value["sidebar"].get("plugin").is_none());
         assert_eq!(value["future"]["unknown"], json!(true));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `docs/keyboard.md` teaches users which action keys to configure, so it
+    /// must stay in sync with the canonical `ActionDefinition::config_key`
+    /// names and must never advertise a back-compat alias in their place.
+    #[test]
+    fn keyboard_docs_list_canonical_action_keys() {
+        const KEYBOARD_DOC: &str = include_str!("../../../docs/keyboard.md");
+
+        let block = KEYBOARD_DOC
+            .split_once("Supported action keys are:")
+            .expect("supported action keys section")
+            .1
+            .split_once("```text")
+            .expect("fenced action key block")
+            .1
+            .split_once("```")
+            .expect("closing fence")
+            .0;
+        let documented: Vec<&str> =
+            block.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+        assert_eq!(
+            documented.len(),
+            action_definitions().len(),
+            "docs/keyboard.md action key list should contain exactly the canonical action catalog"
+        );
+
+        for definition in action_definitions() {
+            assert!(
+                documented.contains(&definition.config_key),
+                "docs/keyboard.md does not list canonical action key `{}`",
+                definition.config_key
+            );
+        }
+
+        for alias in ["new_browser_tab", "rename-pane"] {
+            assert!(
+                !documented.contains(&alias),
+                "docs/keyboard.md lists back-compat alias `{alias}` in the supported action key block; list the canonical key instead"
+            );
+        }
     }
 }

@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "repository": "usr-bin-roygbiv/rmux",
+  "workflows": [
+    {"workflow": "ci.yml", "inputs": {"ref": "{candidate_sha}"}},
+    {"workflow": "ci-macos-compat.yml", "inputs": {"ref": "{candidate_sha}"}},
+    {"workflow": "cmux-tui.yml", "candidate_input": "commit", "inputs": {"commit": "{candidate_sha}", "mode": "full", "request_id": "{candidate_sha}"}},
+    {
+      "workflow": "perf-activation.yml",
+      "inputs": {
+        "baseline_sha": "{baseline_sha}",
+        "candidate_sha": "{candidate_sha}",
+        "ref": "{candidate_sha}",
+        "paired_only": "true",
+        "runner": "macos-15"
+      },
+      "artifact": "integration-benchmark"
+    },
+    {"workflow": "test-depot.yml", "inputs": {"ref": "{candidate_sha}"}},
+    {"workflow": "test-ios.yml", "inputs": {"ref": "{candidate_sha}", "runner": "macos-26"}},
+    {"workflow": "tmux-corpus.yml", "inputs": {"ref": "{candidate_sha}"}}
+  ]
+}

@@ -117,15 +117,15 @@ SCAN_RULES = (
 )
 
 
-# These handwritten v10 modules remain reachable only through `cmux::raw`.
-# Keeping the filenames explicit prevents a new sibling from silently escaping
-# the high-level scan.  New low-level code belongs in a raw/ or internal/ dir.
+# These handwritten v10 SDK modules and Java compatibility events remain
+# reachable only through legacy protocol surfaces. Keeping every filename
+# explicit prevents a new sibling from silently escaping the high-level scan.
 EXPLICIT_INTERNAL_FILES = frozenset(
     {
         "bindings/rust/src/client.rs",
-        "bindings/rust/src/codec.rs",
         "bindings/rust/src/convenience.rs",
-        "bindings/rust/src/presence.rs",
+        "bindings/rust/src/codec.rs",
+        "bindings/rust/src/stream.rs",
         "bindings/rust/src/topology.rs",
     }
 )
@@ -2068,14 +2068,14 @@ def _operation_catalog(
             )
     expected_agent_state = {
         "kind": "enum",
-        "values": ["working", "blocked", "idle", "done", "unknown"],
+        "values": ["working", "blocked", "idle", "done", "error", "unknown"],
     }
     if "agent.list" in operations and types.get("AgentState") != expected_agent_state:
         _catalog_diagnostic(
             diagnostics,
             path,
             text,
-            "AgentState must match the runtime working|blocked|idle|done|unknown set",
+            "AgentState must match the runtime working|blocked|idle|done|error|unknown set",
             "AgentState",
         )
     agent_state_ref = {"kind": "ref", "name": "AgentState"}

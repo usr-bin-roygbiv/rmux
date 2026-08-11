@@ -148,6 +148,7 @@ impl BuildFixture {
     fn cargo_identity_with_log(&self) -> (String, String) {
         let target = self.root.join("cargo-target");
         let output = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+            .env_remove(BUILD_COMMIT_ENV)
             .arg("build")
             .arg("--verbose")
             .arg("--manifest-path")
