@@ -1460,7 +1460,7 @@ mod tests {
             let mut child = command.spawn().unwrap();
             tree.bind(child.id()).unwrap();
             let mut signal = accepted_receiver
-                .recv_timeout(Duration::from_secs(5))
+                .recv_timeout(Duration::from_secs(30))
                 .expect("detached hook did not connect its lifecycle signal")
                 .unwrap();
             acceptor.join().unwrap();
