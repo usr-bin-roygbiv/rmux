@@ -2167,7 +2167,9 @@ fn require_pty(surface: &crate::Surface) -> anyhow::Result<()> {
     if surface.kind() == SurfaceKind::Pty {
         Ok(())
     } else {
-        anyhow::bail!("browser surface does not support PTY/VT socket commands")
+        anyhow::bail!(
+            "browser surface does not support terminal-only PTY/VT socket commands; use list-workspaces to inspect it, select-tab to display it, or browser commands for navigation and input"
+        )
     }
 }
 

@@ -41,6 +41,19 @@ cargo run -p cmux-tui -- attach --session agents
 
 Detach from an attached TUI with prefix `d`. With default keys, that is `Ctrl-b d`. The server keeps running, and another `attach` reconnects to the same tree. PTY tabs attach with a Ghostty VT-state replay followed by a live output stream.
 
+## Control commands
+
+Control-socket verbs use named flags. Run `<verb> --help` for a command-specific usage line and its accepted flags; this does not print the unrelated global verb list.
+
+```bash
+cmux-tui read-screen --help
+cmux-tui read-screen --surface 42
+cmux-tui close-surface --surface 42
+cmux-tui new-browser-tab --url about:blank --pane 7
+```
+
+`read-screen` returns terminal viewport text and rejects browser surfaces. Use `list-workspaces` to inspect a tab's `kind`, pane, and tab index, then `select-tab --pane <id> --index <index>` to display a browser tab.
+
 ## Sessions and sockets
 
 The default socket path is:
