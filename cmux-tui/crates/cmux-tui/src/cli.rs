@@ -1794,4 +1794,27 @@ mod tests {
         print_scrollback(&data, &mut output).unwrap();
         assert_eq!(output, b"cargo\nok\n");
     }
+
+    #[test]
+    fn verb_help_targets_one_command_and_lists_accepted_flags() {
+        let args = vec!["new-browser-tab".to_string(), "--help".to_string()];
+        let Parsed::Help(Some(verb)) = parse(&args).unwrap() else {
+            panic!("verb-specific help lost the selected command");
+        };
+        let help = render_verb_help(verb);
+
+        assert!(help.contains("cmux-tui new-browser-tab"));
+        for flag in ["--url <value>", "--pane <value>", "--cols <value>", "--rows <value>"] {
+            assert!(help.contains(flag), "missing {flag} from {help:?}");
+        }
+        assert!(help.contains("Create a browser tab."));
+        assert!(!help.contains("close-surface"));
+        assert!(!help.contains("VERB HELP"));
+    }
+
+    #[test]
+    fn global_help_remains_global_without_a_selected_verb() {
+        let args = vec!["--help".to_string()];
+        assert!(matches!(parse(&args), Ok(Parsed::Help(None))));
+    }
 }

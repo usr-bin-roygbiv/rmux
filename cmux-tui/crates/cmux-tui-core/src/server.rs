@@ -3993,6 +3993,26 @@ mod tests {
     }
 
     #[test]
+    fn browser_pty_error_points_to_browser_safe_commands() {
+        let mux = test_mux();
+        let surface = crate::browser::new_surface(
+            999,
+            "about:blank".to_string(),
+            (80, 24),
+            (8, 16),
+            &SurfaceOptions::default(),
+            Arc::downgrade(&mux),
+        );
+
+        let message = require_pty(&surface).unwrap_err().to_string();
+        surface.kill();
+
+        assert!(message.contains("terminal-only PTY/VT"));
+        assert!(message.contains("list-workspaces"));
+        assert!(message.contains("select-tab"));
+    }
+
+    #[test]
     fn stack_json_uses_the_stored_expansion_while_focus_is_elsewhere() {
         let stack = Node::stack_with_expanded(vec![1, 2, 3], 2).unwrap();
 
