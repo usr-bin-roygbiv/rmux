@@ -79,7 +79,7 @@ impl PtyChild {
                 &mut slave,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                &size,
+                std::ptr::from_ref(&size).cast_mut(),
             )
         };
         assert_eq!(opened, 0, "openpty failed: {}", std::io::Error::last_os_error());
