@@ -2167,7 +2167,9 @@ fn require_pty(surface: &crate::Surface) -> anyhow::Result<()> {
     if surface.kind() == SurfaceKind::Pty {
         Ok(())
     } else {
-        anyhow::bail!("browser surface does not support PTY/VT socket commands")
+        anyhow::bail!(
+            "browser surface does not support terminal-only PTY/VT socket commands; use list-workspaces to inspect it, select-tab to display it, or browser commands for navigation and input"
+        )
     }
 }
 
@@ -3990,6 +3992,26 @@ mod tests {
             outbound: Arc::new(BoundedOutbound::default()),
             control: None,
         })
+    }
+
+    #[test]
+    fn browser_pty_error_points_to_browser_safe_commands() {
+        let mux = test_mux();
+        let surface = crate::browser::new_surface(
+            999,
+            "about:blank".to_string(),
+            (80, 24),
+            (8, 16),
+            &SurfaceOptions::default(),
+            Arc::downgrade(&mux),
+        );
+
+        let message = require_pty(&surface).unwrap_err().to_string();
+        surface.kill();
+
+        assert!(message.contains("terminal-only PTY/VT"));
+        assert!(message.contains("list-workspaces"));
+        assert!(message.contains("select-tab"));
     }
 
     #[test]

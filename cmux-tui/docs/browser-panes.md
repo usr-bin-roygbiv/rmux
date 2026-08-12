@@ -25,6 +25,14 @@ Bare domains get `https://` prepended. Inputs containing `://`, or starting with
 
 Browser tabs are created inside an existing pane when one is active. If the session has no workspaces, creating a browser tab creates a workspace, screen, and pane around it.
 
+The control CLI requires both the initial URL and an exact existing pane:
+
+```bash
+cmux-tui new-browser-tab --url https://example.com --pane 7
+```
+
+Use `cmux-tui new-browser-tab --help` to list only that verb's accepted flags.
+
 ## Rendering
 
 The browser runtime creates a target, attaches with CDP, enables the page domain, sets device metrics from the pane's cell size and detected cell pixels, and starts `Page.screencastFrame`.
@@ -56,5 +64,7 @@ To attach to an existing runtime, set `browser.cdp_url`, `CMUX_MUX_CDP_URL`, or 
 ## Limitations
 
 Attach clients can stream browser panes as of protocol v6. Older protocol servers show a placeholder for browser panes.
+
+`read-screen`, `read-scrollback`, and other PTY/VT commands are terminal-only and return an actionable error for browser surfaces. Use `list-workspaces` for browser metadata and `select-tab --pane <id> --index <index>` to display the exact tab; use the `browser-*` control-socket commands for navigation and input.
 
 Headful external Chrome can throttle screencast frames when the window or tab is hidden or occluded. Mux nudges stalled external targets once before interaction with `Target.activateTarget`.

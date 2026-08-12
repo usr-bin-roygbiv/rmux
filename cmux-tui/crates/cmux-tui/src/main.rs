@@ -209,10 +209,7 @@ fn version_string() -> String {
 fn main() {
     install_signal_handlers();
     let raw_args = std::env::args().skip(1).collect::<Vec<_>>();
-    if raw_args.first().map(|arg| arg.as_str()) == Some("help") {
-        cli::print_help(USAGE);
-        std::process::exit(0);
-    }
+
     if cli::is_cli_invocation(&raw_args) {
         std::process::exit(cli::run(&raw_args, USAGE));
     }

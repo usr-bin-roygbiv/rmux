@@ -410,7 +410,11 @@ pub fn is_cli_invocation(args: &[String]) -> bool {
 
 pub fn run(args: &[String], usage: &str) -> i32 {
     match parse(args) {
-        Ok(Parsed::Help) => {
+        Ok(Parsed::Help(Some(verb))) => {
+            print!("{}", render_verb_help(verb));
+            0
+        }
+        Ok(Parsed::Help(None)) => {
             print_help(usage);
             0
         }
@@ -438,7 +442,7 @@ enum FirstCommand {
 }
 
 enum Parsed {
-    Help,
+    Help(Option<&'static VerbSpec>),
     Command(CliArgs),
 }
 
@@ -459,8 +463,13 @@ fn first_command_arg(args: &[String]) -> FirstCommand {
 }
 
 fn parse(args: &[String]) -> Result<Parsed, UsageError> {
-    if matches!(first_command_arg(args), FirstCommand::Help) {
-        return Ok(Parsed::Help);
+    if args.first().is_some_and(|arg| arg == "help") {
+        return match args.get(1) {
+            None => Ok(Parsed::Help(None)),
+            Some(name) => verb_by_name(name)
+                .map(|verb| Parsed::Help(Some(verb)))
+                .ok_or_else(|| UsageError(format!("unknown verb {name:?}"))),
+        };
     }
 
     let mut global = GlobalArgs::default();
@@ -470,7 +479,7 @@ fn parse(args: &[String]) -> Result<Parsed, UsageError> {
     while i < args.len() {
         let arg = args[i].as_str();
         match arg {
-            "-h" | "--help" | "help" => return Ok(Parsed::Help),
+            "-h" | "--help" | "help" => return Ok(Parsed::Help(verb)),
             "--json" => {
                 global.json = true;
                 i += 1;
@@ -549,6 +558,39 @@ fn value_after(args: &[String], index: usize, flag: &str) -> Result<String, Usag
 
 fn verb_by_name(name: &str) -> Option<&'static VerbSpec> {
     VERBS.iter().find(|verb| verb.name == name)
+}
+
+fn render_verb_help(verb: &VerbSpec) -> String {
+    let mut output = format!("USAGE:\n  cmux-tui {}", verb.name);
+    for flag in verb.allowed {
+        output.push_str(" [--");
+        output.push_str(flag);
+        if !is_boolean_flag(verb, flag) {
+            output.push_str(" <value>");
+        }
+        output.push(']');
+    }
+    match verb.name {
+        "run" => output.push_str(" [-- <command>...]"),
+        "send-key" => output.push_str(" <key>..."),
+        "plugin" => output.push_str(" <subcommand>"),
+        _ => {}
+    }
+    output.push_str("\n\n");
+    output.push_str(verb.help);
+    output.push('\n');
+    if !verb.allowed.is_empty() {
+        output.push_str("\nACCEPTED FLAGS:\n");
+        for flag in verb.allowed {
+            output.push_str("  --");
+            output.push_str(flag);
+            if !is_boolean_flag(verb, flag) {
+                output.push_str(" <value>");
+            }
+            output.push('\n');
+        }
+    }
+    output
 }
 
 fn run_command(args: CliArgs) -> i32 {
@@ -1793,5 +1835,28 @@ mod tests {
         let mut output = Vec::new();
         print_scrollback(&data, &mut output).unwrap();
         assert_eq!(output, b"cargo\nok\n");
+    }
+
+    #[test]
+    fn verb_help_targets_one_command_and_lists_accepted_flags() {
+        let args = vec!["new-browser-tab".to_string(), "--help".to_string()];
+        let Parsed::Help(Some(verb)) = parse(&args).unwrap() else {
+            panic!("verb-specific help lost the selected command");
+        };
+        let help = render_verb_help(verb);
+
+        assert!(help.contains("cmux-tui new-browser-tab"));
+        for flag in ["--url <value>", "--pane <value>", "--cols <value>", "--rows <value>"] {
+            assert!(help.contains(flag), "missing {flag} from {help:?}");
+        }
+        assert!(help.contains("Create a browser tab."));
+        assert!(!help.contains("close-surface"));
+        assert!(!help.contains("VERB HELP"));
+    }
+
+    #[test]
+    fn global_help_remains_global_without_a_selected_verb() {
+        let args = vec!["--help".to_string()];
+        assert!(matches!(parse(&args), Ok(Parsed::Help(None))));
     }
 }
