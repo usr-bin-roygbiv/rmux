@@ -782,12 +782,8 @@ mod tests {
         writer.write_all(b"12345678\n").unwrap();
         drop(writer);
         let mut reader = BufReader::with_capacity(16, reader);
-        let error = read_control_line(
-            &mut reader,
-            Instant::now() + Duration::from_secs(1),
-            8,
-        )
-        .unwrap_err();
+        let error =
+            read_control_line(&mut reader, Instant::now() + Duration::from_secs(1), 8).unwrap_err();
 
         assert!(error.to_string().contains("response exceeds 16 MiB"));
     }
