@@ -583,8 +583,8 @@ fn read_control_line(
     limit: usize,
 ) -> anyhow::Result<Vec<u8>> {
     let mut line = Vec::new();
-    reader.get_ref().set_read_timeout(Some(remaining_socket_timeout(deadline)?))?;
     loop {
+        reader.get_ref().set_read_timeout(Some(remaining_socket_timeout(deadline)?))?;
         let available = reader.fill_buf()?;
         anyhow::ensure!(!available.is_empty(), "cmux-tui closed its control socket");
         let consumed = available
@@ -779,16 +779,16 @@ mod tests {
     #[test]
     fn control_response_limit_is_enforced_while_streaming() {
         let (reader, mut writer) = UnixStream::pair().unwrap();
-        writer.write_all(b"12345678\n").unwrap();
-        drop(writer);
-        let mut reader = BufReader::with_capacity(16, reader);
-        let error =
-            read_control_line(&mut reader, Instant::now() + Duration::from_secs(5), 8).unwrap_err();
+        let writer = std::thread::spawn(move || writer.write_all(b"12345678\n").unwrap());
+        let error = read_control_line(
+            &mut BufReader::new(reader),
+            Instant::now() + Duration::from_secs(1),
+            8,
+        )
+        .unwrap_err();
+        writer.join().unwrap();
 
-        assert!(
-            error.to_string().contains("response exceeds 16 MiB"),
-            "unexpected limit error: {error:#}"
-        );
+        assert!(error.to_string().contains("response exceeds 16 MiB"));
     }
 
     #[test]
