@@ -5674,23 +5674,6 @@ impl Mux {
             terminal_revision,
         });
     }
-    fn pending_terminal_host_callback_matches(
-        terminal: &RegistryTerminal,
-        identity: &TerminalHostIdentity,
-    ) -> bool {
-        match terminal.lifecycle {
-            TerminalLifecycle::Launching => terminal
-                .incarnation
-                .as_deref()
-                .is_none_or(|incarnation| incarnation == identity.incarnation.as_str()),
-            TerminalLifecycle::Adopting => {
-                terminal.incarnation.as_deref() == Some(identity.incarnation.as_str())
-            }
-            TerminalLifecycle::Running
-            | TerminalLifecycle::Exited
-            | TerminalLifecycle::Tombstoned => false,
-        }
-    }
 
     fn transition_terminal_lifecycle(
         &self,

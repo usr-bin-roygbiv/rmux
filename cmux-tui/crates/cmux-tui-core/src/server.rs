@@ -17293,7 +17293,7 @@ mod tests {
             (8, 16),
             &SurfaceOptions::default(),
             Arc::downgrade(&mux),
-        );
+        ).unwrap();
 
         let message = require_pty(&surface).unwrap_err().to_string();
         surface.kill();

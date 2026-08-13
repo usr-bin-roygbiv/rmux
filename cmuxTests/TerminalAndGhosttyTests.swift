@@ -4103,9 +4103,10 @@ final class FocusDebugScrollWheelMonitorTests: XCTestCase {
         monitor = nil
     }
 
-    func testGhosttyViewTeardownInvalidatesOwnedMonitorOnce() {
+    func testGhosttyViewTeardownInvalidatesOwnedMonitorOnce() async {
         let token = NSObject()
         var removeCount = 0
+        let removed = expectation(description: "monitor removed on main actor")
 
         autoreleasepool {
             let monitor = FocusDebugScrollWheelMonitor.install(
@@ -4115,6 +4116,8 @@ final class FocusDebugScrollWheelMonitorTests: XCTestCase {
                 remover: { installedToken in
                     XCTAssertTrue((installedToken as AnyObject) === token)
                     removeCount += 1
+                    XCTAssertTrue(Thread.isMainThread)
+                    removed.fulfill()
                 }
             )
             var view: GhosttyNSView? = GhosttyNSView(
@@ -4124,6 +4127,7 @@ final class FocusDebugScrollWheelMonitorTests: XCTestCase {
             XCTAssertNotNil(view)
             view = nil
         }
+        await fulfillment(of: [removed], timeout: 1)
 
         XCTAssertEqual(removeCount, 1)
     }
