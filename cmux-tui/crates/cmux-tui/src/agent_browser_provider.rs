@@ -785,7 +785,10 @@ mod tests {
         let error =
             read_control_line(&mut reader, Instant::now() + Duration::from_secs(1), 8).unwrap_err();
 
-        assert!(error.to_string().contains("response exceeds 16 MiB"));
+        assert!(
+            error.to_string().contains("response exceeds 16 MiB"),
+            "unexpected limit error: {error:#}"
+        );
     }
 
     #[test]
