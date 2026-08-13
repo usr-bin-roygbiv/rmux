@@ -779,14 +779,14 @@ mod tests {
     #[test]
     fn control_response_limit_is_enforced_while_streaming() {
         let (reader, mut writer) = UnixStream::pair().unwrap();
-        let writer = std::thread::spawn(move || writer.write_all(b"12345678\n").unwrap());
+        writer.write_all(b"12345678\n").unwrap();
+        drop(writer);
         let error = read_control_line(
             &mut BufReader::new(reader),
             Instant::now() + Duration::from_secs(1),
             8,
         )
         .unwrap_err();
-        writer.join().unwrap();
 
         assert!(error.to_string().contains("response exceeds 16 MiB"));
     }
