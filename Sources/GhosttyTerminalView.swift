@@ -3875,6 +3875,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     }
 
     init(frame frameRect: NSRect, focusScrollWheelMonitor: FocusDebugScrollWheelMonitor?) {
+        imageTransferPreparation = nil
         super.init(frame: frameRect)
         self.focusScrollWheelMonitor = focusScrollWheelMonitor
         setup(installFocusScrollWheelMonitor: false)
