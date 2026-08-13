@@ -717,7 +717,9 @@ mod tests {
         let help = scope_help(&scope);
 
         assert!(help.contains("cmux browser list"));
-        assert!(help.contains("cmux browser <selector> show|navigate|back|forward|reload|activate"));
+        assert!(
+            help.contains("cmux browser <selector> show|navigate|back|forward|reload|activate")
+        );
         assert!(help.contains("cmux browser <selector> key|text [OPTIONS]"));
         assert!(help.contains("cmux browser <selector> mouse|wheel --pointer-frame-seq <decimal>"));
         assert!(help.contains("cmux browser <selector> attach|close [OPTIONS]"));
