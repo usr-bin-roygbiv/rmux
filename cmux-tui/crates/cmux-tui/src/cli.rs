@@ -709,25 +709,24 @@ mod tests {
     }
 
     #[test]
-    fn verb_help_targets_one_command_and_lists_accepted_flags() {
-        let args = vec!["new-browser-tab".to_string(), "--help".to_string()];
-        let Parsed::Help(Some(verb)) = parse(&args).unwrap() else {
-            panic!("verb-specific help lost the selected command");
+    fn browser_scope_help_targets_browser_commands() {
+        let args = strings(&["browser", "--help"]);
+        let ParsedCommand::Help(Some(scope)) = parse(&args).unwrap() else {
+            panic!("browser help lost the selected resource scope");
         };
-        let help = render_verb_help(verb);
+        let help = scope_help(&scope);
 
-        assert!(help.contains("cmux-tui new-browser-tab"));
-        for flag in ["--url <value>", "--pane <value>", "--cols <value>", "--rows <value>"] {
-            assert!(help.contains(flag), "missing {flag} from {help:?}");
-        }
-        assert!(help.contains("Create a browser tab."));
-        assert!(!help.contains("close-surface"));
-        assert!(!help.contains("VERB HELP"));
+        assert!(help.contains("cmux browser list"));
+        assert!(help.contains("cmux browser <selector> show|navigate|back|forward|reload|activate"));
+        assert!(help.contains("cmux browser <selector> key|text [OPTIONS]"));
+        assert!(help.contains("cmux browser <selector> mouse|wheel --pointer-frame-seq <decimal>"));
+        assert!(help.contains("cmux browser <selector> attach|close [OPTIONS]"));
+        assert!(!help.contains("cmux notification"));
     }
 
     #[test]
-    fn global_help_remains_global_without_a_selected_verb() {
+    fn global_help_remains_global_without_a_selected_scope() {
         let args = vec!["--help".to_string()];
-        assert!(matches!(parse(&args), Ok(Parsed::Help(None))));
+        assert!(matches!(parse(&args), Ok(ParsedCommand::Help(None))));
     }
 }
