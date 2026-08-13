@@ -1,5 +1,5 @@
 // This file is generated. Do not edit by hand.
-// cmux-tui mux protocol 12, IR 0f28922d64be59160110a6e7bf5a7656132ce163e82792c474c29c26a1bee529.
+// cmux-tui mux protocol 12, IR ce4a7ce926e4e65a26bc164f5e6a3fa37dde7a06b38d536baf67161a0296bb26.
 // The emitter owns this layout so generation is independent of the installed rustfmt.
 
 use crate::{Nullable, Optional};
@@ -18,10 +18,26 @@ pub type JsonValue = serde_json::Value;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentRecord {
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub agents_active: Optional<u64>,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub detail: Optional<String>,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub jobs_running: Optional<u64>,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub label: Optional<String>,
+    #[serde(default, deserialize_with = "crate::presence::deserialize_optional_non_null", skip_serializing_if = "Option::is_none")]
+    pub root_session: Option<bool>,
     pub session: Nullable<String>,
     pub source: AgentSource,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub started_at_ms: Optional<u64>,
     pub state: AgentState,
     pub surface: Id,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub tasks_completed: Optional<u64>,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub tasks_total: Optional<u64>,
     pub updated_at_ms: u64,
 }
 
@@ -56,6 +72,8 @@ pub enum AgentState {
     Idle,
     #[serde(rename = "done")]
     Done,
+    #[serde(rename = "error")]
+    Error,
     #[serde(rename = "unknown")]
     Unknown,
 }
@@ -768,10 +786,26 @@ pub enum RenderUnderline {
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReportAgentResult {
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub agents_active: Optional<u64>,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub detail: Optional<String>,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub jobs_running: Optional<u64>,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub label: Optional<String>,
+    #[serde(default, deserialize_with = "crate::presence::deserialize_optional_non_null", skip_serializing_if = "Option::is_none")]
+    pub root_session: Option<bool>,
     pub session: Nullable<String>,
     pub source: AgentReportSource,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub started_at_ms: Optional<u64>,
     pub state: AgentState,
     pub surface: Id,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub tasks_completed: Optional<u64>,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub tasks_total: Optional<u64>,
 }
 
 #[rustfmt::skip]

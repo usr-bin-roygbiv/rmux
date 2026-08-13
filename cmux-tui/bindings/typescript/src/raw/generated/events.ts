@@ -1,5 +1,5 @@
 /* This file is generated. Do not edit by hand. */
-/* cmux-tui mux protocol 12, IR 0f28922d64be59160110a6e7bf5a7656132ce163e82792c474c29c26a1bee529. */
+/* cmux-tui mux protocol 12, IR ce4a7ce926e4e65a26bc164f5e6a3fa37dde7a06b38d536baf67161a0296bb26. */
 
 
 import type * as T from "./types.js";
@@ -10,6 +10,24 @@ export type AgentChangedEvent = { event: "agent-changed" } & {
   "source": T.AgentSource;
   "state": T.AgentState;
   "surface": T.Id;
+  "updated_at_ms": bigint;
+};
+
+/** Protocol v12; emission: emitted; streams: subscribe. */
+export type AgentStateChangedEvent = { event: "agent-state-changed" } & {
+  "agents_active"?: (bigint) | null;
+  "detail"?: (string) | null;
+  "jobs_running"?: (bigint) | null;
+  "label"?: (string) | null;
+  "previous": (T.AgentState) | null;
+  "root_session"?: boolean;
+  "session": (string) | null;
+  "source": T.AgentSource;
+  "started_at_ms"?: (bigint) | null;
+  "state": T.AgentState;
+  "surface": T.Id;
+  "tasks_completed"?: (bigint) | null;
+  "tasks_total"?: (bigint) | null;
   "updated_at_ms": bigint;
 };
 
@@ -123,6 +141,7 @@ export type NotificationEvent = { event: "notification" } & {
   "body": string;
   "level": T.NotificationLevel;
   "notification": T.Id;
+  "subtitle"?: (string) | null;
   "surface": (T.Id) | null;
   "title": string;
 };
@@ -249,6 +268,8 @@ export type StatusEvent = { event: "status" } & {
 
 /** Protocol v5; emission: emitted; streams: subscribe. */
 export type SurfaceExitedEvent = { event: "surface-exited" } & {
+  /** Hosted child runtime in milliseconds; null for browser and non-hosted surfaces. */
+  "runtime_ms"?: (bigint) | null;
   "surface": T.Id;
 };
 
@@ -394,6 +415,7 @@ export interface UnknownEvent {
 /** Every event emitted by protocol v12. */
 export type KnownCmuxEvent =
   | AgentChangedEvent
+  | AgentStateChangedEvent
   | BellEvent
   | BrowserStateEvent
   | ClientAttachedEvent
@@ -446,6 +468,7 @@ export type SerializedButNotEmittedEvent =
 /** Known subscribe stream events. */
 export type KnownSubscribeEvent =
   | AgentChangedEvent
+  | AgentStateChangedEvent
   | BellEvent
   | ClientAttachedEvent
   | ClientChangedEvent

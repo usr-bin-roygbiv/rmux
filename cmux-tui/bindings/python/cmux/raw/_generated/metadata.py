@@ -8,7 +8,7 @@ from typing import Mapping, Optional, Tuple
 
 SCHEMA_VERSION = 2
 MUX_PROTOCOL = 12
-IR_SHA256 = '0f28922d64be59160110a6e7bf5a7656132ce163e82792c474c29c26a1bee529'
+IR_SHA256 = 'ce4a7ce926e4e65a26bc164f5e6a3fa37dde7a06b38d536baf67161a0296bb26'
 
 
 @dataclass(frozen=True)
@@ -756,6 +756,7 @@ COMMANDS = {
         {
             'body': CommandFieldMetadata(None, None),
             'level': CommandFieldMetadata(None, None),
+            'subtitle': CommandFieldMetadata(12, None),
             'surface': CommandFieldMetadata(None, None),
             'title': CommandFieldMetadata(None, None),
         },
@@ -972,10 +973,18 @@ COMMANDS = {
         ('control', 'frontend', 'local-admin', 'provider-authority'),
         None,
         {
+            'agents_active': CommandFieldMetadata(12, None),
+            'detail': CommandFieldMetadata(12, None),
+            'jobs_running': CommandFieldMetadata(12, None),
+            'label': CommandFieldMetadata(12, None),
+            'root_session': CommandFieldMetadata(12, None),
             'session': CommandFieldMetadata(None, None),
             'source': CommandFieldMetadata(None, None),
+            'started_at_ms': CommandFieldMetadata(12, None),
             'state': CommandFieldMetadata(None, None),
             'surface': CommandFieldMetadata(None, None),
+            'tasks_completed': CommandFieldMetadata(12, None),
+            'tasks_total': CommandFieldMetadata(12, None),
         },
     ),
     'resize-attached-view': CommandMetadata(
@@ -1357,6 +1366,7 @@ COMMANDS = {
 
 EVENTS = {
     'agent-changed': EventMetadata('agent-changed', 11, None, ('subscribe',), 'emitted'),
+    'agent-state-changed': EventMetadata('agent-state-changed', 12, None, ('subscribe',), 'emitted'),
     'bell': EventMetadata('bell', 5, None, ('subscribe',), 'emitted'),
     'browser-state': EventMetadata('browser-state', 6, None, ('attach-browser',), 'emitted'),
     'client-attached': EventMetadata('client-attached', 6, None, ('subscribe',), 'emitted'),

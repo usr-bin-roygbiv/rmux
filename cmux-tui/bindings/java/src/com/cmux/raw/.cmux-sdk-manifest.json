@@ -7,8 +7,8 @@
     },
     {
       "path": "AgentRecord.java",
-      "sha256": "eef00432f4ddccf77ea227a7a744562bb05d4d529c03e789caaf21bb4a8969be",
-      "size": 4707
+      "sha256": "acb76a32355ac4e69d8c35c988b43338a9073e7f2398420dcd7601c48cbf76ca",
+      "size": 10314
     },
     {
       "path": "AgentReportSource.java",
@@ -22,8 +22,13 @@
     },
     {
       "path": "AgentState.java",
-      "sha256": "8383831bbfbe634fc714b7ab582789b4ead7711a4947f1efb67af66c3c30342a",
-      "size": 938
+      "sha256": "ae08fe2d497238f4d5c394eddbb3fe08fdd6f347a113e2b32c0709f63e767a2f",
+      "size": 958
+    },
+    {
+      "path": "AgentStateChangedEvent.java",
+      "sha256": "249ff0d6134efb0b3b423934851e83b70ab94ddbe2fad446659219afa9783be5",
+      "size": 11608
     },
     {
       "path": "AppliedPane.java",
@@ -282,8 +287,8 @@
     },
     {
       "path": "CloseTerminalRequest.java",
-      "sha256": "30578b547046e5a669fa0a38ca79d26b15b0e7d840aa24cb4da6d85d9083bf8b",
-      "size": 6112
+      "sha256": "b3e82583b4cafe9866585409e90da21dae7fb491496852248521aacc63f9ebf0",
+      "size": 6124
     },
     {
       "path": "CloseTerminalResult.java",
@@ -307,8 +312,8 @@
     },
     {
       "path": "Commands.java",
-      "sha256": "e98e5346be0295d401b8e64bf6fbb0fb63ab887bbbc24ffc00077789da098950",
-      "size": 24550
+      "sha256": "b9766ec91fa6d94a49d0d213869ddddd47e71a793f9dac7d062cef0cec935c23",
+      "size": 24835
     },
     {
       "path": "ConfigReloadRequestedEvent.java",
@@ -417,8 +422,8 @@
     },
     {
       "path": "Events.java",
-      "sha256": "71c5c3389dd353275d2820e385d869a46006b00fdc41064cb6b6ddc4754b2e8e",
-      "size": 9039
+      "sha256": "e6c69021e6fc5465b008e2b17c8a7de53f0be519941a778f98416e18d3b37e0d",
+      "size": 9243
     },
     {
       "path": "ExportLayoutRequest.java",
@@ -727,8 +732,8 @@
     },
     {
       "path": "NotificationEvent.java",
-      "sha256": "55d14727fe45c9523c8556147bd4acf154a6ae7762795b2964b869e7b6ee1942",
-      "size": 5129
+      "sha256": "8df9dbf661e0164748d7a191670f799a0a09e1657cb664505f8be40c3117cc45",
+      "size": 5798
     },
     {
       "path": "NotificationLevel.java",
@@ -742,8 +747,8 @@
     },
     {
       "path": "NotifyRequest.java",
-      "sha256": "075fbb556334d50012818305a9c3375a1ed8ef6912b9fa002d333fc449e771cc",
-      "size": 3848
+      "sha256": "bdbb07076befe5a494eab22780642d660627c8e0d78518a70573af17f86f8f75",
+      "size": 4513
     },
     {
       "path": "NotifyResult.java",
@@ -827,8 +832,8 @@
     },
     {
       "path": "Protocol.java",
-      "sha256": "1320a02c8e43614efb8ca0954a2968da4601de63798c871940c789176fc4b866",
-      "size": 4038
+      "sha256": "387d3fc99f9a22f3acdbcdebc6400c466076d2b341549c83349bc172e176c14f",
+      "size": 4120
     },
     {
       "path": "ProtocolEvent.java",
@@ -982,13 +987,13 @@
     },
     {
       "path": "ReportAgentRequest.java",
-      "sha256": "596f8059e053f7a1c73aac3b9f8d25c6b93e68a4bc840b4ea4f01c0d991b1ace",
-      "size": 4037
+      "sha256": "72e6215d15fcf5dc3ad29fe4028acf67ef2677b1e7644bdf5ef7542b2215772a",
+      "size": 9700
     },
     {
       "path": "ReportAgentResult.java",
-      "sha256": "491ad7eba751ae0a9820f775b42dc847acb61763e59c13a57f4d55bb136a16ad",
-      "size": 4005
+      "sha256": "804ae43ea5fb5d42891c1969664f22a2a559c1487ad17cf95c742f259ee73304",
+      "size": 9660
     },
     {
       "path": "ResizeAttachedViewRequest.java",
@@ -1197,8 +1202,8 @@
     },
     {
       "path": "SurfaceExitedEvent.java",
-      "sha256": "4180b081bafd27ec10ff77fe1f105f4e12aaf7435a2d3afce45e759b03ae5ac7",
-      "size": 2308
+      "sha256": "720f88306e9ce3906cd48331ecf2eedbf6c04345b923274b682d2d67b414eaaf",
+      "size": 3092
     },
     {
       "path": "SurfaceOutputEvent.java",
@@ -1457,7 +1462,7 @@
     }
   ],
   "format": 1,
-  "ir_sha256": "0f28922d64be59160110a6e7bf5a7656132ce163e82792c474c29c26a1bee529",
+  "ir_sha256": "ce4a7ce926e4e65a26bc164f5e6a3fa37dde7a06b38d536baf67161a0296bb26",
   "language": "java",
   "mux_protocol": 12,
   "schema_version": 2

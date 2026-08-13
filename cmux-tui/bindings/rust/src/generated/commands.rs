@@ -1,5 +1,5 @@
 // This file is generated. Do not edit by hand.
-// cmux-tui mux protocol 12, IR 0f28922d64be59160110a6e7bf5a7656132ce163e82792c474c29c26a1bee529.
+// cmux-tui mux protocol 12, IR ce4a7ce926e4e65a26bc164f5e6a3fa37dde7a06b38d536baf67161a0296bb26.
 // The emitter owns this layout so generation is independent of the installed rustfmt.
 
 use super::metadata::*;
@@ -304,6 +304,7 @@ pub struct CloseTerminalRequest {
     pub mutation_id: Optional<String>,
     #[serde(default, skip_serializing_if = "Optional::is_missing")]
     pub origin: Optional<String>,
+    #[serde(alias = "terminal")]
     pub terminal_id: String,
     #[serde(default, skip_serializing_if = "Optional::is_missing")]
     pub terminal_incarnation: Optional<String>,
@@ -739,6 +740,8 @@ pub struct NotifyRequest {
     #[serde(default, skip_serializing_if = "Optional::is_missing")]
     pub level: Optional<T::NotificationLevel>,
     #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub subtitle: Optional<String>,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
     pub surface: Optional<T::Id>,
     pub title: String,
 }
@@ -922,10 +925,26 @@ pub type RenameWorkspaceResult = T::WorkspaceMutationResult;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReportAgentRequest {
     #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub agents_active: Optional<u64>,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub detail: Optional<String>,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub jobs_running: Optional<u64>,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub label: Optional<String>,
+    #[serde(default, deserialize_with = "crate::presence::deserialize_optional_non_null", skip_serializing_if = "Option::is_none")]
+    pub root_session: Option<bool>,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
     pub session: Optional<String>,
     pub source: T::AgentReportSource,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub started_at_ms: Optional<u64>,
     pub state: T::AgentState,
     pub surface: T::Id,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub tasks_completed: Optional<u64>,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub tasks_total: Optional<u64>,
 }
 
 #[rustfmt::skip]
@@ -1554,6 +1573,9 @@ impl CmuxClient {
     }
 
     pub fn notify(&mut self, request: NotifyRequest) -> Result<T::NotifyResult> {
+        if !request.subtitle.is_missing() {
+            self.require_protocol_field("notify", 12)?;
+        }
         self.execute(&NOTIFY_METADATA, &request)
     }
 
@@ -1638,6 +1660,30 @@ impl CmuxClient {
     }
 
     pub fn report_agent(&mut self, request: ReportAgentRequest) -> Result<T::ReportAgentResult> {
+        if !request.agents_active.is_missing() {
+            self.require_protocol_field("report-agent", 12)?;
+        }
+        if !request.detail.is_missing() {
+            self.require_protocol_field("report-agent", 12)?;
+        }
+        if !request.jobs_running.is_missing() {
+            self.require_protocol_field("report-agent", 12)?;
+        }
+        if !request.label.is_missing() {
+            self.require_protocol_field("report-agent", 12)?;
+        }
+        if request.root_session.is_some() {
+            self.require_protocol_field("report-agent", 12)?;
+        }
+        if !request.started_at_ms.is_missing() {
+            self.require_protocol_field("report-agent", 12)?;
+        }
+        if !request.tasks_completed.is_missing() {
+            self.require_protocol_field("report-agent", 12)?;
+        }
+        if !request.tasks_total.is_missing() {
+            self.require_protocol_field("report-agent", 12)?;
+        }
         self.execute(&REPORT_AGENT_METADATA, &request)
     }
 

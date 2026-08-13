@@ -1,5 +1,5 @@
 // This file is generated. Do not edit by hand.
-// cmux-tui mux protocol 12, IR 0f28922d64be59160110a6e7bf5a7656132ce163e82792c474c29c26a1bee529.
+// cmux-tui mux protocol 12, IR ce4a7ce926e4e65a26bc164f5e6a3fa37dde7a06b38d536baf67161a0296bb26.
 // The emitter owns this layout so generation is independent of the installed rustfmt.
 
 use super::metadata::*;
@@ -16,6 +16,33 @@ pub struct AgentChangedEvent {
     pub source: T::AgentSource,
     pub state: T::AgentState,
     pub surface: T::Id,
+    pub updated_at_ms: u64,
+}
+
+#[rustfmt::skip]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentStateChangedEvent {
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub agents_active: Optional<u64>,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub detail: Optional<String>,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub jobs_running: Optional<u64>,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub label: Optional<String>,
+    pub previous: Nullable<T::AgentState>,
+    #[serde(default, deserialize_with = "crate::presence::deserialize_optional_non_null", skip_serializing_if = "Option::is_none")]
+    pub root_session: Option<bool>,
+    pub session: Nullable<String>,
+    pub source: T::AgentSource,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub started_at_ms: Optional<u64>,
+    pub state: T::AgentState,
+    pub surface: T::Id,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub tasks_completed: Optional<u64>,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub tasks_total: Optional<u64>,
     pub updated_at_ms: u64,
 }
 
@@ -188,6 +215,8 @@ pub struct NotificationEvent {
     pub body: String,
     pub level: T::NotificationLevel,
     pub notification: T::Id,
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub subtitle: Optional<String>,
     pub surface: Nullable<T::Id>,
     pub title: String,
 }
@@ -344,6 +373,9 @@ pub struct StatusEvent {
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SurfaceExitedEvent {
+    /// Hosted child runtime in milliseconds; null for browser and non-hosted surfaces.
+    #[serde(default, skip_serializing_if = "Optional::is_missing")]
+    pub runtime_ms: Optional<u64>,
     pub surface: T::Id,
 }
 
@@ -520,6 +552,7 @@ pub struct UnknownEvent {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     AgentChanged(AgentChangedEvent),
+    AgentStateChanged(AgentStateChangedEvent),
     Bell(BellEvent),
     BrowserState(BrowserStateEvent),
     ClientAttached(ClientAttachedEvent),
@@ -573,6 +606,7 @@ impl Event {
     pub fn wire_name(&self) -> Option<&str> {
         match self {
             Self::AgentChanged(_) => Some("agent-changed"),
+            Self::AgentStateChanged(_) => Some("agent-state-changed"),
             Self::Bell(_) => Some("bell"),
             Self::BrowserState(_) => Some("browser-state"),
             Self::ClientAttached(_) => Some("client-attached"),
@@ -625,6 +659,7 @@ impl Event {
     pub fn metadata(&self) -> Option<&'static EventMetadata> {
         match self {
             Self::AgentChanged(_) => Some(&AGENT_CHANGED_EVENT_METADATA),
+            Self::AgentStateChanged(_) => Some(&AGENT_STATE_CHANGED_EVENT_METADATA),
             Self::Bell(_) => Some(&BELL_EVENT_METADATA),
             Self::BrowserState(_) => Some(&BROWSER_STATE_EVENT_METADATA),
             Self::ClientAttached(_) => Some(&CLIENT_ATTACHED_EVENT_METADATA),
@@ -681,6 +716,14 @@ pub fn decode_event(raw: Value) -> Event {
     match name.as_deref() {
         Some("agent-changed") => match serde_json::from_value::<AgentChangedEvent>(raw.clone()) {
             Ok(event) => Event::AgentChanged(event),
+            Err(error) => Event::Unknown(UnknownEvent {
+                name,
+                raw,
+                decode_error: Some(error.to_string()),
+            }),
+        },
+        Some("agent-state-changed") => match serde_json::from_value::<AgentStateChangedEvent>(raw.clone()) {
+            Ok(event) => Event::AgentStateChanged(event),
             Err(error) => Event::Unknown(UnknownEvent {
                 name,
                 raw,

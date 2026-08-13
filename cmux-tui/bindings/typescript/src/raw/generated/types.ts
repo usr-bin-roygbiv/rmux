@@ -1,5 +1,5 @@
 /* This file is generated. Do not edit by hand. */
-/* cmux-tui mux protocol 12, IR 0f28922d64be59160110a6e7bf5a7656132ce163e82792c474c29c26a1bee529. */
+/* cmux-tui mux protocol 12, IR ce4a7ce926e4e65a26bc164f5e6a3fa37dde7a06b38d536baf67161a0296bb26. */
 
 
 /** JSON accepted by the wire codec. bigint is serialized as an exact JSON integer. */
@@ -7,10 +7,18 @@ export type JsonValue = null | boolean | number | bigint | string | JsonValue[] 
 export type JsonObject = { [key: string]: JsonValue };
 
 export type AgentRecord = {
+  "agents_active"?: (bigint) | null;
+  "detail"?: (string) | null;
+  "jobs_running"?: (bigint) | null;
+  "label"?: (string) | null;
+  "root_session"?: boolean;
   "session": (string) | null;
   "source": AgentSource;
+  "started_at_ms"?: (bigint) | null;
   "state": AgentState;
   "surface": Id;
+  "tasks_completed"?: (bigint) | null;
+  "tasks_total"?: (bigint) | null;
   "updated_at_ms": bigint;
 };
 
@@ -18,7 +26,7 @@ export type AgentReportSource = "socket" | "hook";
 
 export type AgentSource = "detected" | "socket" | "hook";
 
-export type AgentState = "working" | "blocked" | "idle" | "done" | "unknown";
+export type AgentState = "working" | "blocked" | "idle" | "done" | "error" | "unknown";
 
 export type AppliedPane = {
   "pane": Id;
@@ -467,10 +475,18 @@ export type RenderRun = {
 export type RenderUnderline = "single" | "double" | "curly" | "dotted" | "dashed";
 
 export type ReportAgentResult = {
+  "agents_active"?: (bigint) | null;
+  "detail"?: (string) | null;
+  "jobs_running"?: (bigint) | null;
+  "label"?: (string) | null;
+  "root_session"?: boolean;
   "session": (string) | null;
   "source": AgentReportSource;
+  "started_at_ms"?: (bigint) | null;
   "state": AgentState;
   "surface": Id;
+  "tasks_completed"?: (bigint) | null;
+  "tasks_total"?: (bigint) | null;
 };
 
 export type ResizeSurfaceResult = {

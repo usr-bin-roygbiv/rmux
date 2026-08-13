@@ -1,10 +1,10 @@
 /* This file is generated. Do not edit by hand. */
-/* cmux-tui mux protocol 12, IR 0f28922d64be59160110a6e7bf5a7656132ce163e82792c474c29c26a1bee529. */
+/* cmux-tui mux protocol 12, IR ce4a7ce926e4e65a26bc164f5e6a3fa37dde7a06b38d536baf67161a0296bb26. */
 
 
 export const SDK_SCHEMA_VERSION = 2 as const;
 export const MUX_PROTOCOL_VERSION = 12 as const;
-export const SDK_IR_SHA256 = "0f28922d64be59160110a6e7bf5a7656132ce163e82792c474c29c26a1bee529" as const;
+export const SDK_IR_SHA256 = "ce4a7ce926e4e65a26bc164f5e6a3fa37dde7a06b38d536baf67161a0296bb26" as const;
 export const PROTOCOL = {
   "id_type": "uint64",
   "javascript_id_policy": "All protocol identifiers are uint64 JSON numbers. JavaScript and TypeScript SDKs must decode them losslessly as bigint (or validated decimal strings at their public boundary), and must not expose IEEE-754 number ids. Pairing request ids, revisions, timestamps, frame sequences, and reservation ids follow the same rule.",
@@ -663,7 +663,12 @@ export const COMMAND_METADATA = {
     "authority": "control",
     "since": 6,
     "capability": null,
-    "fields": {},
+    "fields": {
+      "subtitle": {
+        "since": 12,
+        "capability": null
+      }
+    },
     "stream": null,
     "constraints": []
   },
@@ -847,7 +852,40 @@ export const COMMAND_METADATA = {
     "authority": "control",
     "since": 6,
     "capability": null,
-    "fields": {},
+    "fields": {
+      "agents_active": {
+        "since": 12,
+        "capability": null
+      },
+      "detail": {
+        "since": 12,
+        "capability": null
+      },
+      "jobs_running": {
+        "since": 12,
+        "capability": null
+      },
+      "label": {
+        "since": 12,
+        "capability": null
+      },
+      "root_session": {
+        "since": 12,
+        "capability": null
+      },
+      "started_at_ms": {
+        "since": 12,
+        "capability": null
+      },
+      "tasks_completed": {
+        "since": 12,
+        "capability": null
+      },
+      "tasks_total": {
+        "since": 12,
+        "capability": null
+      }
+    },
     "stream": null,
     "constraints": [
       "A stored hook report outranks later socket reports until another hook report or surface close."
@@ -1253,6 +1291,14 @@ export const EVENT_METADATA = {
     ],
     "emission": "emitted"
   },
+  "agent-state-changed": {
+    "since": 12,
+    "capability": null,
+    "streams": [
+      "subscribe"
+    ],
+    "emission": "emitted"
+  },
   "bell": {
     "since": 5,
     "capability": null,
@@ -1633,6 +1679,52 @@ export const TYPE_SCHEMAS: Readonly<Record<string, TypeSchema>> = {
   "AgentRecord": {
     "additional_properties": false,
     "fields": {
+      "agents_active": {
+        "nullable": true,
+        "presence": "optional",
+        "since": 12,
+        "type": {
+          "kind": "scalar",
+          "name": "uint64"
+        }
+      },
+      "detail": {
+        "nullable": true,
+        "presence": "optional",
+        "since": 12,
+        "type": {
+          "kind": "scalar",
+          "name": "string"
+        }
+      },
+      "jobs_running": {
+        "nullable": true,
+        "presence": "optional",
+        "since": 12,
+        "type": {
+          "kind": "scalar",
+          "name": "uint64"
+        }
+      },
+      "label": {
+        "nullable": true,
+        "presence": "optional",
+        "since": 12,
+        "type": {
+          "kind": "scalar",
+          "name": "string"
+        }
+      },
+      "root_session": {
+        "default": false,
+        "nullable": false,
+        "presence": "optional",
+        "since": 12,
+        "type": {
+          "kind": "scalar",
+          "name": "boolean"
+        }
+      },
       "session": {
         "nullable": true,
         "presence": "required",
@@ -1649,6 +1741,15 @@ export const TYPE_SCHEMAS: Readonly<Record<string, TypeSchema>> = {
           "name": "AgentSource"
         }
       },
+      "started_at_ms": {
+        "nullable": true,
+        "presence": "optional",
+        "since": 12,
+        "type": {
+          "kind": "scalar",
+          "name": "uint64"
+        }
+      },
       "state": {
         "nullable": false,
         "presence": "required",
@@ -1663,6 +1764,24 @@ export const TYPE_SCHEMAS: Readonly<Record<string, TypeSchema>> = {
         "type": {
           "kind": "ref",
           "name": "Id"
+        }
+      },
+      "tasks_completed": {
+        "nullable": true,
+        "presence": "optional",
+        "since": 12,
+        "type": {
+          "kind": "scalar",
+          "name": "uint64"
+        }
+      },
+      "tasks_total": {
+        "nullable": true,
+        "presence": "optional",
+        "since": 12,
+        "type": {
+          "kind": "scalar",
+          "name": "uint64"
         }
       },
       "updated_at_ms": {
@@ -1698,6 +1817,7 @@ export const TYPE_SCHEMAS: Readonly<Record<string, TypeSchema>> = {
       "blocked",
       "idle",
       "done",
+      "error",
       "unknown"
     ]
   },
@@ -4389,6 +4509,52 @@ export const TYPE_SCHEMAS: Readonly<Record<string, TypeSchema>> = {
   "ReportAgentResult": {
     "additional_properties": false,
     "fields": {
+      "agents_active": {
+        "nullable": true,
+        "presence": "optional",
+        "since": 12,
+        "type": {
+          "kind": "scalar",
+          "name": "uint64"
+        }
+      },
+      "detail": {
+        "nullable": true,
+        "presence": "optional",
+        "since": 12,
+        "type": {
+          "kind": "scalar",
+          "name": "string"
+        }
+      },
+      "jobs_running": {
+        "nullable": true,
+        "presence": "optional",
+        "since": 12,
+        "type": {
+          "kind": "scalar",
+          "name": "uint64"
+        }
+      },
+      "label": {
+        "nullable": true,
+        "presence": "optional",
+        "since": 12,
+        "type": {
+          "kind": "scalar",
+          "name": "string"
+        }
+      },
+      "root_session": {
+        "default": false,
+        "nullable": false,
+        "presence": "optional",
+        "since": 12,
+        "type": {
+          "kind": "scalar",
+          "name": "boolean"
+        }
+      },
       "session": {
         "nullable": true,
         "presence": "required",
@@ -4405,6 +4571,15 @@ export const TYPE_SCHEMAS: Readonly<Record<string, TypeSchema>> = {
           "name": "AgentReportSource"
         }
       },
+      "started_at_ms": {
+        "nullable": true,
+        "presence": "optional",
+        "since": 12,
+        "type": {
+          "kind": "scalar",
+          "name": "uint64"
+        }
+      },
       "state": {
         "nullable": false,
         "presence": "required",
@@ -4419,6 +4594,24 @@ export const TYPE_SCHEMAS: Readonly<Record<string, TypeSchema>> = {
         "type": {
           "kind": "ref",
           "name": "Id"
+        }
+      },
+      "tasks_completed": {
+        "nullable": true,
+        "presence": "optional",
+        "since": 12,
+        "type": {
+          "kind": "scalar",
+          "name": "uint64"
+        }
+      },
+      "tasks_total": {
+        "nullable": true,
+        "presence": "optional",
+        "since": 12,
+        "type": {
+          "kind": "scalar",
+          "name": "uint64"
         }
       }
     },
@@ -7133,6 +7326,9 @@ export const COMMAND_SCHEMAS: Readonly<Record<string, CommandSchema>> = {
           }
         },
         "terminal_id": {
+          "aliases": [
+            "terminal"
+          ],
           "nullable": false,
           "presence": "required",
           "type": {
@@ -8565,6 +8761,15 @@ export const COMMAND_SCHEMAS: Readonly<Record<string, CommandSchema>> = {
             "name": "NotificationLevel"
           }
         },
+        "subtitle": {
+          "nullable": true,
+          "presence": "optional",
+          "since": 12,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
         "surface": {
           "default": null,
           "nullable": true,
@@ -9215,6 +9420,52 @@ export const COMMAND_SCHEMAS: Readonly<Record<string, CommandSchema>> = {
     "request": {
       "additional_properties": false,
       "fields": {
+        "agents_active": {
+          "nullable": true,
+          "presence": "optional",
+          "since": 12,
+          "type": {
+            "kind": "scalar",
+            "name": "uint64"
+          }
+        },
+        "detail": {
+          "nullable": true,
+          "presence": "optional",
+          "since": 12,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        "jobs_running": {
+          "nullable": true,
+          "presence": "optional",
+          "since": 12,
+          "type": {
+            "kind": "scalar",
+            "name": "uint64"
+          }
+        },
+        "label": {
+          "nullable": true,
+          "presence": "optional",
+          "since": 12,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        "root_session": {
+          "default": false,
+          "nullable": false,
+          "presence": "optional",
+          "since": 12,
+          "type": {
+            "kind": "scalar",
+            "name": "boolean"
+          }
+        },
         "session": {
           "default": null,
           "nullable": true,
@@ -9232,6 +9483,15 @@ export const COMMAND_SCHEMAS: Readonly<Record<string, CommandSchema>> = {
             "name": "AgentReportSource"
           }
         },
+        "started_at_ms": {
+          "nullable": true,
+          "presence": "optional",
+          "since": 12,
+          "type": {
+            "kind": "scalar",
+            "name": "uint64"
+          }
+        },
         "state": {
           "nullable": false,
           "presence": "required",
@@ -9246,6 +9506,24 @@ export const COMMAND_SCHEMAS: Readonly<Record<string, CommandSchema>> = {
           "type": {
             "kind": "ref",
             "name": "Id"
+          }
+        },
+        "tasks_completed": {
+          "nullable": true,
+          "presence": "optional",
+          "since": 12,
+          "type": {
+            "kind": "scalar",
+            "name": "uint64"
+          }
+        },
+        "tasks_total": {
+          "nullable": true,
+          "presence": "optional",
+          "since": 12,
+          "type": {
+            "kind": "scalar",
+            "name": "uint64"
           }
         }
       },
@@ -10546,6 +10824,133 @@ export const EVENT_SCHEMAS: Readonly<Record<string, TypeSchema>> = {
     },
     "kind": "object"
   },
+  "agent-state-changed": {
+    "additional_properties": false,
+    "fields": {
+      "agents_active": {
+        "nullable": true,
+        "presence": "optional",
+        "type": {
+          "kind": "scalar",
+          "name": "uint64"
+        }
+      },
+      "detail": {
+        "nullable": true,
+        "presence": "optional",
+        "type": {
+          "kind": "scalar",
+          "name": "string"
+        }
+      },
+      "event": {
+        "nullable": false,
+        "presence": "required",
+        "type": {
+          "kind": "literal",
+          "value": "agent-state-changed"
+        }
+      },
+      "jobs_running": {
+        "nullable": true,
+        "presence": "optional",
+        "type": {
+          "kind": "scalar",
+          "name": "uint64"
+        }
+      },
+      "label": {
+        "nullable": true,
+        "presence": "optional",
+        "type": {
+          "kind": "scalar",
+          "name": "string"
+        }
+      },
+      "previous": {
+        "nullable": true,
+        "presence": "required",
+        "type": {
+          "kind": "ref",
+          "name": "AgentState"
+        }
+      },
+      "root_session": {
+        "default": false,
+        "nullable": false,
+        "presence": "optional",
+        "type": {
+          "kind": "scalar",
+          "name": "boolean"
+        }
+      },
+      "session": {
+        "nullable": true,
+        "presence": "required",
+        "type": {
+          "kind": "scalar",
+          "name": "string"
+        }
+      },
+      "source": {
+        "nullable": false,
+        "presence": "required",
+        "type": {
+          "kind": "ref",
+          "name": "AgentSource"
+        }
+      },
+      "started_at_ms": {
+        "nullable": true,
+        "presence": "optional",
+        "type": {
+          "kind": "scalar",
+          "name": "uint64"
+        }
+      },
+      "state": {
+        "nullable": false,
+        "presence": "required",
+        "type": {
+          "kind": "ref",
+          "name": "AgentState"
+        }
+      },
+      "surface": {
+        "nullable": false,
+        "presence": "required",
+        "type": {
+          "kind": "ref",
+          "name": "Id"
+        }
+      },
+      "tasks_completed": {
+        "nullable": true,
+        "presence": "optional",
+        "type": {
+          "kind": "scalar",
+          "name": "uint64"
+        }
+      },
+      "tasks_total": {
+        "nullable": true,
+        "presence": "optional",
+        "type": {
+          "kind": "scalar",
+          "name": "uint64"
+        }
+      },
+      "updated_at_ms": {
+        "nullable": false,
+        "presence": "required",
+        "type": {
+          "kind": "scalar",
+          "name": "uint64"
+        }
+      }
+    },
+    "kind": "object"
+  },
   "bell": {
     "additional_properties": false,
     "fields": {
@@ -11181,6 +11586,15 @@ export const EVENT_SCHEMAS: Readonly<Record<string, TypeSchema>> = {
         "type": {
           "kind": "ref",
           "name": "Id"
+        }
+      },
+      "subtitle": {
+        "nullable": true,
+        "presence": "optional",
+        "since": 12,
+        "type": {
+          "kind": "scalar",
+          "name": "string"
         }
       },
       "surface": {
@@ -11937,6 +12351,16 @@ export const EVENT_SCHEMAS: Readonly<Record<string, TypeSchema>> = {
         "type": {
           "kind": "literal",
           "value": "surface-exited"
+        }
+      },
+      "runtime_ms": {
+        "description": "Hosted child runtime in milliseconds; null for browser and non-hosted surfaces.",
+        "nullable": true,
+        "presence": "optional",
+        "since": 10,
+        "type": {
+          "kind": "scalar",
+          "name": "uint64"
         }
       },
       "surface": {

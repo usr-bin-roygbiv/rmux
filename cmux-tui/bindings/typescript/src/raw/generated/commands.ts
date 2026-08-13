@@ -1,5 +1,5 @@
 /* This file is generated. Do not edit by hand. */
-/* cmux-tui mux protocol 12, IR 0f28922d64be59160110a6e7bf5a7656132ce163e82792c474c29c26a1bee529. */
+/* cmux-tui mux protocol 12, IR ce4a7ce926e4e65a26bc164f5e6a3fa37dde7a06b38d536baf67161a0296bb26. */
 
 
 import type * as T from "./types.js";
@@ -510,6 +510,7 @@ export interface NotifyRequest extends CmuxRequestBase {
   cmd: "notify";
   "body": string;
   "level"?: (T.NotificationLevel) | null;
+  "subtitle"?: (string) | null;
   "surface"?: (T.Id) | null;
   "title": string;
 }
@@ -657,10 +658,18 @@ export type RenameWorkspaceResult = T.WorkspaceMutationResult;
 /** Protocol v6; authority: control. */
 export interface ReportAgentRequest extends CmuxRequestBase {
   cmd: "report-agent";
+  "agents_active"?: (bigint) | null;
+  "detail"?: (string) | null;
+  "jobs_running"?: (bigint) | null;
+  "label"?: (string) | null;
+  "root_session"?: boolean;
   "session"?: (string) | null;
   "source": T.AgentReportSource;
+  "started_at_ms"?: (bigint) | null;
   "state": T.AgentState;
   "surface": T.Id;
+  "tasks_completed"?: (bigint) | null;
+  "tasks_total"?: (bigint) | null;
 }
 
 /** Protocol v10; authority: frontend. */

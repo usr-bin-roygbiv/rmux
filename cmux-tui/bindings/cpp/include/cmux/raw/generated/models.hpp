@@ -14,7 +14,7 @@
 namespace cmux::raw {
 
 inline constexpr std::uint32_t kMuxProtocolVersion = 12U;
-inline constexpr std::string_view kProtocolIrSha256 = "0f28922d64be59160110a6e7bf5a7656132ce163e82792c474c29c26a1bee529";
+inline constexpr std::string_view kProtocolIrSha256 = "ce4a7ce926e4e65a26bc164f5e6a3fa37dde7a06b38d536baf67161a0296bb26";
 
 struct AgentRecord;
 enum class AgentReportSource;
@@ -223,6 +223,7 @@ struct VtStateRequest;
 struct WaitForRequest;
 struct ZoomPaneRequest;
 struct AgentChangedEvent;
+struct AgentStateChangedEvent;
 struct BellEvent;
 struct BrowserStateEvent;
 struct ClientAttachedEvent;
@@ -308,6 +309,7 @@ enum class AgentState {
     blocked,
     idle,
     done,
+    error,
     unknown,
 };
 
@@ -326,10 +328,18 @@ struct AgentChangedEvent {
 };
 
 struct AgentRecord {
+    Field<std::uint64_t> agents_active{};
+    Field<std::string> detail{};
+    Field<std::uint64_t> jobs_running{};
+    Field<std::string> label{};
+    std::optional<bool> root_session{};
     std::optional<std::string> session{};
     AgentSource source{};
+    Field<std::uint64_t> started_at_ms{};
     AgentState state{};
     Id surface{};
+    Field<std::uint64_t> tasks_completed{};
+    Field<std::uint64_t> tasks_total{};
     std::uint64_t updated_at_ms{};
     friend bool operator==(const AgentRecord&, const AgentRecord&) = default;
 };
@@ -337,6 +347,24 @@ struct AgentRecord {
 enum class AgentReportSource {
     socket,
     hook,
+};
+
+struct AgentStateChangedEvent {
+    Field<std::uint64_t> agents_active{};
+    Field<std::string> detail{};
+    Field<std::uint64_t> jobs_running{};
+    Field<std::string> label{};
+    std::optional<AgentState> previous{};
+    std::optional<bool> root_session{};
+    std::optional<std::string> session{};
+    AgentSource source{};
+    Field<std::uint64_t> started_at_ms{};
+    AgentState state{};
+    Id surface{};
+    Field<std::uint64_t> tasks_completed{};
+    Field<std::uint64_t> tasks_total{};
+    std::uint64_t updated_at_ms{};
+    friend bool operator==(const AgentStateChangedEvent&, const AgentStateChangedEvent&) = default;
 };
 
 struct AppliedPane {
@@ -1597,6 +1625,7 @@ struct NotificationEvent {
     std::string body{};
     NotificationLevel level{};
     Id notification{};
+    Field<std::string> subtitle{};
     std::optional<Id> surface{};
     std::string title{};
     friend bool operator==(const NotificationEvent&, const NotificationEvent&) = default;
@@ -1605,6 +1634,7 @@ struct NotificationEvent {
 struct NotifyRequest {
     std::string body{};
     Field<NotificationLevel> level{};
+    Field<std::string> subtitle{};
     Field<Id> surface{};
     std::string title{};
     friend bool operator==(const NotifyRequest&, const NotifyRequest&) = default;
@@ -1949,18 +1979,34 @@ struct RenderStateEvent {
 };
 
 struct ReportAgentRequest {
+    Field<std::uint64_t> agents_active{};
+    Field<std::string> detail{};
+    Field<std::uint64_t> jobs_running{};
+    Field<std::string> label{};
+    std::optional<bool> root_session{};
     Field<std::string> session{};
     AgentReportSource source{};
+    Field<std::uint64_t> started_at_ms{};
     AgentState state{};
     Id surface{};
+    Field<std::uint64_t> tasks_completed{};
+    Field<std::uint64_t> tasks_total{};
     friend bool operator==(const ReportAgentRequest&, const ReportAgentRequest&) = default;
 };
 
 struct ReportAgentResult {
+    Field<std::uint64_t> agents_active{};
+    Field<std::string> detail{};
+    Field<std::uint64_t> jobs_running{};
+    Field<std::string> label{};
+    std::optional<bool> root_session{};
     std::optional<std::string> session{};
     AgentReportSource source{};
+    Field<std::uint64_t> started_at_ms{};
     AgentState state{};
     Id surface{};
+    Field<std::uint64_t> tasks_completed{};
+    Field<std::uint64_t> tasks_total{};
     friend bool operator==(const ReportAgentResult&, const ReportAgentResult&) = default;
 };
 
@@ -2242,6 +2288,7 @@ struct SubscribeRequest {
 };
 
 struct SurfaceExitedEvent {
+    Field<std::uint64_t> runtime_ms{};
     Id surface{};
     friend bool operator==(const SurfaceExitedEvent&, const SurfaceExitedEvent&) = default;
 };
@@ -3763,6 +3810,12 @@ template <>
 struct Codec<AgentChangedEvent> {
     static Result<Json> encode(const AgentChangedEvent& value);
     static Result<AgentChangedEvent> decode(const Json& value);
+};
+
+template <>
+struct Codec<AgentStateChangedEvent> {
+    static Result<Json> encode(const AgentStateChangedEvent& value);
+    static Result<AgentStateChangedEvent> decode(const Json& value);
 };
 
 template <>
