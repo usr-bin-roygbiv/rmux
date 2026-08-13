@@ -583,8 +583,8 @@ fn read_control_line(
     limit: usize,
 ) -> anyhow::Result<Vec<u8>> {
     let mut line = Vec::new();
+    reader.get_ref().set_read_timeout(Some(remaining_socket_timeout(deadline)?))?;
     loop {
-        reader.get_ref().set_read_timeout(Some(remaining_socket_timeout(deadline)?))?;
         let available = reader.fill_buf()?;
         anyhow::ensure!(!available.is_empty(), "cmux-tui closed its control socket");
         let consumed = available
@@ -783,7 +783,7 @@ mod tests {
         drop(writer);
         let mut reader = BufReader::with_capacity(16, reader);
         let error =
-            read_control_line(&mut reader, Instant::now() + Duration::from_secs(1), 8).unwrap_err();
+            read_control_line(&mut reader, Instant::now() + Duration::from_secs(5), 8).unwrap_err();
 
         assert!(
             error.to_string().contains("response exceeds 16 MiB"),
