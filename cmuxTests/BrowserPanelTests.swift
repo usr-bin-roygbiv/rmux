@@ -3106,16 +3106,6 @@ final class BrowserWindowPortalLifecycleTests: XCTestCase {
         }
     }
 
-    private final class TrackingPortalAnchorView: NSView {
-        private(set) var windowConversionCount = 0
-
-        override func convert(_ rect: NSRect, to view: NSView?) -> NSRect {
-            if view == nil {
-                windowConversionCount += 1
-            }
-            return super.convert(rect, to: view)
-        }
-    }
 
     private final class WKInspectorProbeView: NSView {}
 
@@ -3674,29 +3664,28 @@ final class BrowserWindowPortalLifecycleTests: XCTestCase {
             return
         }
 
-        let anchor = TrackingPortalAnchorView(frame: NSRect(x: 40, y: 24, width: 220, height: 160))
+        let anchor = NSView(frame: NSRect(x: 40, y: 24, width: 220, height: 160))
         contentView.addSubview(anchor)
         let webView = CmuxWebView(frame: .zero, configuration: WKWebViewConfiguration())
         portal.bind(webView: webView, to: anchor, visibleInUI: true)
         await waitForNextMainTurn()
 
-        let conversionCountBeforeResize = anchor.windowConversionCount
+        let deferredFullSyncCountBeforeResize = portal.debugDeferredFullSyncScheduleCount()
         anchor.frame = NSRect(x: 52, y: 30, width: 248, height: 178)
         contentView.layoutSubtreeIfNeeded()
         portal.synchronizeWebViewForAnchor(anchor)
-        let conversionCountAfterResize = anchor.windowConversionCount
         XCTAssertEqual(
-            conversionCountAfterResize - conversionCountBeforeResize,
-            1,
-            "A single hosted browser should synchronize its changed anchor once"
+            portal.debugDeferredFullSyncScheduleCount(),
+            deferredFullSyncCountBeforeResize,
+            "A single hosted browser should not schedule an all-entry recovery pass"
         )
 
         await waitForNextMainTurn()
 
         XCTAssertEqual(
-            anchor.windowConversionCount,
-            conversionCountAfterResize,
-            "A single hosted browser should not receive a redundant deferred all-entry pass"
+            portal.debugDeferredFullSyncScheduleCount(),
+            deferredFullSyncCountBeforeResize,
+            "A single hosted browser should not enqueue a redundant deferred all-entry pass"
         )
     }
 

@@ -1842,6 +1842,9 @@ final class WindowBrowserPortal: NSObject {
     private var hasDeferredFullSyncScheduled = false
     private var hasExternalGeometrySyncScheduled = false
     private var geometryObservers: [NSObjectProtocol] = []
+#if DEBUG
+    private var deferredFullSyncScheduleCountForTesting = 0
+#endif
 
     private struct Entry {
         weak var webView: WKWebView?
@@ -3074,6 +3077,9 @@ final class WindowBrowserPortal: NSObject {
         guard !hasDeferredFullSyncScheduled else { return }
         hasDeferredFullSyncScheduled = true
 #if DEBUG
+        deferredFullSyncScheduleCountForTesting += 1
+#endif
+#if DEBUG
         cmuxDebugLog("browser.portal.sync.defer.schedule entries=\(entriesByWebViewId.count)")
 #endif
         DispatchQueue.main.async { [weak self] in
@@ -3759,6 +3765,10 @@ final class WindowBrowserPortal: NSObject {
 
     func debugHostedSubviewCount() -> Int {
         hostView.subviews.count
+    }
+
+    func debugDeferredFullSyncScheduleCount() -> Int {
+        deferredFullSyncScheduleCountForTesting
     }
 #endif
 
