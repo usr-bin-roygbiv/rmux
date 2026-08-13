@@ -781,8 +781,9 @@ mod tests {
         let (reader, mut writer) = UnixStream::pair().unwrap();
         writer.write_all(b"12345678\n").unwrap();
         drop(writer);
+        let mut reader = BufReader::with_capacity(16, reader);
         let error = read_control_line(
-            &mut BufReader::new(reader),
+            &mut reader,
             Instant::now() + Duration::from_secs(1),
             8,
         )
